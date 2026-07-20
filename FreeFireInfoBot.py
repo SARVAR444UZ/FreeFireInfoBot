@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 import aiohttp
 from aiohttp import web
 
-TOKEN = "8783623839:AAGkfSDD5zM65_ScfEDBRlxGezon0-JLiho"
+TOKEN = "8925245187:AAHaZhcX5FGiinVw1lf8NeiI4ruyOCO4bXc"
 OWNER_ID = 8659710238  # Bot egasining ID si
 
 logging.basicConfig(level=logging.INFO)
