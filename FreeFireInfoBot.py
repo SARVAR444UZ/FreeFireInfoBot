@@ -11,26 +11,20 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 import aiohttp
 from aiohttp import web
 
-TOKEN = "8925245187:AAHaZhcX5FGiinVw1lf8NeiI4ruyOCO4bXc"
+TOKEN = "8925245187:AAHaZhcX5FGiinVw1lf8NeiI4ruyOCO4bXc
 OWNER_ID = 8659710238  # Bot egasining ID si
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- DATABASE API ENDPOINTLARI (umumiy foydalanuvchilar bazasi) ---
-DB_CHECK_URL = "https://database-omega-ten.vercel.app/idchecks"
-DB_ADD_URL = "https://database-omega-ten.vercel.app/idadd={uid}"
-DB_REMOVE_URL = "https://database-omega-ten.vercel.app/remove={uid}"
-
-# --- MAJBURIY A'ZOLIK API ENDPOINTLARI (majburiy obuna kanal/guruhlar) ---
-MAJBURIY_CHECK_URL = "https://majburiy-azo.vercel.app/idchecks"
-MAJBURIY_ADD_URL = "https://majburiy-azo.vercel.app/idadd={uid}"
-MAJBURIY_REMOVE_URL = "https://majburiy-azo.vercel.app/remove={uid}"
+# --- LOKAL FAYL BAZALARI (endi tashqi API o'rniga shu serverning o'zidagi
+# .txt fayllarga yoziladi) ---
+USERS_DB_FILE = "users_db.txt"          # /rek buyrug'i uchun barcha chat ID'lar
+LOCAL_BACKUP_FILE = "majburiy_backup.txt"  # majburiy a'zolik kanal/guruh ID'lari
 
 # --- RENDER UCHUN KEEP-ALIVE SOZLAMALARI ---
 SELF_URL = os.environ.get("RENDER_EXTERNAL_URL")
-LOCAL_BACKUP_FILE = "majburiy_backup.txt"
 
 # ==========================================
 # 🧩 "/" SIZ HAM, "/" BILAN HAM ISHLAYDIGAN KOMANDA FILTRI
@@ -65,15 +59,36 @@ class Cmd(BaseFilter):
         return cmd is not None and cmd in self.commands
 
 # ==========================================
-# 💾 DATABASE (USER) BILAN ISHLASH FUNKSIYALARI
+# 💾 UMUMIY FOYDALANUVCHILAR BAZASI (lokal .txt fayl)
 # ==========================================
+# Bu bazadan faqat /rek (reklama) buyrug'i uchun barcha chat ID'lar olinadi.
+
+def _read_users_ids():
+    ids = set()
+    try:
+        with open(USERS_DB_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    ids.add(line)
+    except FileNotFoundError:
+        pass
+    return ids
+
+def _write_users_ids(ids):
+    with open(USERS_DB_FILE, "w", encoding="utf-8") as f:
+        for i in ids:
+            f.write(i + "\n")
 
 async def db_add_id(session: aiohttp.ClientSession, chat_id: int):
-    """Yangi chat (user, guruh, kanal) ID'sini bazaga qo'shadi"""
+    """Yangi chat (user, guruh, kanal) ID'sini lokal faylga qo'shadi"""
     try:
-        url = DB_ADD_URL.format(uid=chat_id)
-        async with session.get(url) as resp:
-            return resp.status == 200
+        ids = _read_users_ids()
+        str_id = str(chat_id)
+        if str_id not in ids:
+            ids.add(str_id)
+            _write_users_ids(ids)
+        return True
     except Exception as e:
         logging.error(f"DB Add xatosi ({chat_id}): {e}")
         return False
@@ -81,62 +96,25 @@ async def db_add_id(session: aiohttp.ClientSession, chat_id: int):
 async def db_get_ids(session: aiohttp.ClientSession):
     """Bazadagi barcha ID'lar ro'yxatini oladi"""
     try:
-        async with session.get(DB_CHECK_URL) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("success") and "ids" in data:
-                    return [item["id"] for item in data["ids"] if "id" in item]
+        return list(_read_users_ids())
     except Exception as e:
         logging.error(f"DB Get IDs xatosi: {e}")
-    return []
+        return []
 
 async def db_remove_id(session: aiohttp.ClientSession, chat_id):
     """Inaktiv yoki bloklangan ID'ni bazadan o'chiradi"""
     try:
-        url = DB_REMOVE_URL.format(uid=chat_id)
-        async with session.get(url) as resp:
-            return resp.status == 200
+        ids = _read_users_ids()
+        ids.discard(str(chat_id))
+        _write_users_ids(ids)
+        return True
     except Exception as e:
         logging.error(f"DB Remove xatosi ({chat_id}): {e}")
         return False
 
 # ==========================================
-# 🔔 MAJBURIY A'ZOLIK BAZASI BILAN ISHLASH
+# 🔔 MAJBURIY A'ZOLIK BAZASI (lokal .txt fayl)
 # ==========================================
-
-async def majburiy_add_id(session: aiohttp.ClientSession, chat_id):
-    """Majburiy azolik kanal/guruh ID'sini bazaga qo'shadi"""
-    try:
-        url = MAJBURIY_ADD_URL.format(uid=chat_id)
-        async with session.get(url) as resp:
-            return resp.status == 200
-    except Exception as e:
-        logging.error(f"Majburiy Add xatosi ({chat_id}): {e}")
-        return False
-
-async def majburiy_get_ids(session: aiohttp.ClientSession):
-    """Majburiy azolik uchun barcha kanal/guruh ID'larini oladi"""
-    try:
-        async with session.get(MAJBURIY_CHECK_URL) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("success") and "ids" in data:
-                    return [str(item["id"]) for item in data["ids"] if "id" in item]
-    except Exception as e:
-        logging.error(f"Majburiy Get IDs xatosi: {e}")
-    return []
-
-async def majburiy_remove_id(session: aiohttp.ClientSession, chat_id):
-    """Majburiy azolik ro'yxatidan ID'ni o'chiradi"""
-    try:
-        url = MAJBURIY_REMOVE_URL.format(uid=chat_id)
-        async with session.get(url) as resp:
-            return resp.status == 200
-    except Exception as e:
-        logging.error(f"Majburiy Remove xatosi ({chat_id}): {e}")
-        return False
-
-# --- LOKAL FAYLGA ZAXIRA (Render qayta ishga tushganda tiklash uchun) ---
 
 def load_local_backup():
     """Lokal fayldan barcha ID'larni o'qiydi"""
@@ -180,21 +158,31 @@ def remove_local_backup_entry(chat_id):
         for line in entries.values():
             f.write(line + "\n")
 
-async def restore_majburiy_from_backup(session: aiohttp.ClientSession):
-    """Bot ishga tushganda, agar API bo'sh bo'lsa, lokal fayldan tiklaydi"""
-    api_ids = await majburiy_get_ids(session)
-    if api_ids:
-        logging.info(f"Majburiy azolik bazasi API'dan yuklandi: {len(api_ids)} ta ID.")
-        return
-    local_ids = load_local_backup()
-    if not local_ids:
-        return
-    restored = 0
-    for cid in local_ids:
-        ok = await majburiy_add_id(session, cid)
-        if ok:
-            restored += 1
-    logging.info(f"API bo'sh edi, lokal fayldan {restored}/{len(local_ids)} ta ID tiklandi.")
+async def majburiy_add_id(session: aiohttp.ClientSession, chat_id, title="", username=""):
+    """Majburiy azolik kanal/guruh ID'sini lokal faylga qo'shadi"""
+    try:
+        save_local_backup_entry(chat_id, title, username)
+        return True
+    except Exception as e:
+        logging.error(f"Majburiy Add xatosi ({chat_id}): {e}")
+        return False
+
+async def majburiy_get_ids(session: aiohttp.ClientSession):
+    """Majburiy azolik uchun barcha kanal/guruh ID'larini oladi"""
+    try:
+        return load_local_backup()
+    except Exception as e:
+        logging.error(f"Majburiy Get IDs xatosi: {e}")
+        return []
+
+async def majburiy_remove_id(session: aiohttp.ClientSession, chat_id):
+    """Majburiy azolik ro'yxatidan ID'ni o'chiradi"""
+    try:
+        remove_local_backup_entry(chat_id)
+        return True
+    except Exception as e:
+        logging.error(f"Majburiy Remove xatosi ({chat_id}): {e}")
+        return False
 
 # --- BAZAGA AVTOMATIK QO'SHISH MIDDLEWARE ---
 
@@ -202,7 +190,7 @@ class AutoRegisterMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, types.Message) and event.chat:
             chat_id = event.chat.id
-            # Har qanday xabar kelganda chat ID sini fonda bazaga yuboramiz
+            # Har qanday xabar kelganda chat ID sini fonda bazaga yozamiz
             asyncio.create_task(db_add_id(data["session"], chat_id))
         return await handler(event, data)
 
@@ -217,8 +205,6 @@ async def check_user_subscription(user_id: int, session: aiohttp.ClientSession):
     """Foydalanuvchi hali obuna bo'lmagan kanal/guruh ID'lari ro'yxatini qaytaradi"""
     not_subscribed = []
     channel_ids = await majburiy_get_ids(session)
-    if not channel_ids:
-        channel_ids = load_local_backup()
     for cid in channel_ids:
         try:
             member = await bot.get_chat_member(int(cid), user_id)
@@ -367,8 +353,7 @@ async def majburiy_command_handler(message: types.Message, session: aiohttp.Clie
         )
         return
 
-    ok = await majburiy_add_id(session, chat.id)
-    save_local_backup_entry(chat.id, chat.title or "", chat.username or "")
+    ok = await majburiy_add_id(session, chat.id, chat.title or "", chat.username or "")
 
     if ok:
         await message.answer(
@@ -379,7 +364,7 @@ async def majburiy_command_handler(message: types.Message, session: aiohttp.Clie
         )
     else:
         await message.answer(
-            "⚠️ API'ga yozishda xatolik yuz berdi, ammo ID lokal faylga zaxiralab qo'yildi.",
+            "⚠️ Yozishda xatolik yuz berdi, qaytadan urinib ko'ring.",
             parse_mode="Markdown"
         )
 
@@ -404,7 +389,6 @@ async def remover_command_handler(message: types.Message, session: aiohttp.Clien
         return
 
     ok = await majburiy_remove_id(session, chat.id)
-    remove_local_backup_entry(chat.id)
 
     if ok:
         await message.answer(
@@ -414,7 +398,7 @@ async def remover_command_handler(message: types.Message, session: aiohttp.Clien
             parse_mode="Markdown"
         )
     else:
-        await message.answer("⚠️ API'dan o'chirishda xatolik yuz berdi, ammo lokal fayldan o'chirildi.")
+        await message.answer("⚠️ O'chirishda xatolik yuz berdi.")
 
 @dp.message(Cmd("royxat"))
 async def royxat_command_handler(message: types.Message, session: aiohttp.ClientSession):
@@ -422,8 +406,6 @@ async def royxat_command_handler(message: types.Message, session: aiohttp.Client
         return
 
     ids_list = await majburiy_get_ids(session)
-    if not ids_list:
-        ids_list = load_local_backup()
 
     if not ids_list:
         await message.answer("❌ Majburiy azolik ro'yxati bo'sh.")
@@ -1019,9 +1001,6 @@ async def main():
         async def session_middleware(handler, event, data):
             data["session"] = session
             return await handler(event, data)
-
-        # Majburiy azolik bazasini tiklash (agar API bo'sh bo'lsa)
-        await restore_majburiy_from_backup(session)
 
         # Render uchun web server va self-ping
         await start_webserver()
