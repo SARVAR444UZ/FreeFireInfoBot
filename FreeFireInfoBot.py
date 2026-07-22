@@ -3,6 +3,7 @@ import asyncio
 import logging
 import re
 import io
+from datetime import datetime
 from PIL import Image
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.filters import Command, BaseFilter
@@ -287,34 +288,31 @@ async def check_sub_callback(callback: types.CallbackQuery, session: aiohttp.Cli
         except Exception:
             pass
 
+# Umumiy matn - /start va /help buyruqlarida bir xil ko'rinishda chiqishi uchun
+BOT_INFO_TEXT = (
+    "👋 **Assalomu alaykum! Botga xush kelibsiz.**\n\n"
+    "🤖 **Bot haqida**\n"
+    "Bu bot Free Fire o'yinchilari haqida ma'lumot olish uchun mo'ljallangan: "
+    "profil ma'lumotlari, ban holati, banner/outfit rasmlari, region va JWT token.\n\n"
+    "📜 **Foydalanuvchi buyruqlari:**\n"
+    "├─ `info <uid>` — o'yinchining to'liq profil ma'lumotlari (banner va outfit rasmi bilan)\n"
+    "├─ `bancheck <uid>` — akkauntning ban holatini tekshirish\n"
+    "├─ `banner <uid>` — avatar-banner va live outfit rasmlarini olish\n"
+    "├─ `region <uid>` — akkaunt region va umumiy ma'lumotlari\n"
+    "├─ `token <uid> <parol>` — JWT token olish\n"
+    "└─ `help` — ushbu yordam xabari\n\n"
+    "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
+    "ℹ️ Barcha buyruqlardan foydalanish uchun avval botga majburiy obuna kanallariga "
+    "a'zo bo'lishingiz kerak bo'lishi mumkin."
+)
+
 @dp.message(Cmd("start"))
 async def start_command_handler(message: types.Message):
-    await message.answer(
-        "👋 Assalomu alaykum! Botga xush kelibsiz.\n\n"
-        "Bot vazifasi va buyruqlar ro'yxati uchun /help buyrug'ini yuboring."
-    )
+    await message.answer(BOT_INFO_TEXT, parse_mode="Markdown")
 
 @dp.message(Cmd("help"))
 async def help_command_handler(message: types.Message):
-    text = (
-        "🤖 **Bot haqida**\n"
-        "Bu bot Free Fire o'yinchilari haqida ma'lumot olish uchun mo'ljallangan: "
-        "profil ma'lumotlari, ban holati, banner/outfit rasmlari, region va JWT token.\n\n"
-        "📜 **Foydalanuvchi buyruqlari:**\n"
-        "├─ `info <uid>` — o'yinchining to'liq profil ma'lumotlari (banner va outfit rasmi bilan)\n"
-        "├─ `bancheck <uid>` — akkauntning ban holatini tekshirish\n"
-        "├─ `banner <uid>` — avatar-banner va live outfit rasmlarini olish\n"
-        "├─ `region <uid>` — akkaunt region va umumiy ma'lumotlari\n"
-        "├─ `token <uid> <parol>` — JWT token olish\n"
-        "└─ `help` — ushbu yordam xabari\n\n"
-        "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
-        "ℹ️ Barcha buyruqlardan foydalanish uchun avval botga majburiy obuna kanallariga "
-        "a'zo bo'lishingiz kerak bo'lishi mumkin."
-    )
-
-
-
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(BOT_INFO_TEXT, parse_mode="Markdown")
 
 # ==========================================
 # 🔔 MAJBURIY A'ZOLIK BOSHQARUV BUYRUQLARI (FAQAT OWNER, FAQAT LICHKA)
@@ -447,6 +445,24 @@ def clean_text(text):
     text = re.sub(r'\(Br Rank -:\s*https?://\S+\)', '', text)
     text = re.sub(r'https?://\S+', '', text)
     return text.strip()
+
+def format_unix_date(timestamp):
+    """Unix timestamp (soniyalarda) qabul qilib, uni 'kun.oy.yil' (masalan
+    01.01.2026) formatidagi sana matniga aylantiradi. Agar qiymat bo'lmasa
+    yoki noto'g'ri formatda bo'lsa, "Noma'lum" qaytaradi."""
+    if timestamp in (None, "", 0, "0"):
+        return "Noma'lum"
+    try:
+        ts = int(float(timestamp))
+        if ts <= 0:
+            return "Noma'lum"
+        # Ba'zi API'lar millisekundda qaytarishi mumkin, shuni tekshiramiz
+        if ts > 10_000_000_000:
+            ts //= 1000
+        dt = datetime.utcfromtimestamp(ts)
+        return dt.strftime("%d.%m.%Y")
+    except (ValueError, TypeError, OSError, OverflowError):
+        return "Noma'lum"
 
 def translate_uzbek_datetime(text):
     if not text or not isinstance(text, str):
@@ -687,8 +703,8 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
     clean_ranking_points = clean_text(acc.get('rankingPoints'))
 
     acc_age = translate_uzbek_datetime(acc.get('accountAge'))
-    created_at = translate_uzbek_datetime(acc.get('createAt'))
-    last_login = translate_uzbek_datetime(acc.get('lastLoginAt'))
+    created_at = format_unix_date(acc.get('createAt'))
+    last_login = format_unix_date(acc.get('lastLoginAt'))
 
     result_text = f"""🎮 **FREE FIRE PLAYER INFO**
 
@@ -887,8 +903,8 @@ async def region_command_handler(message: types.Message, session: aiohttp.Client
     region = acc.get('region', "Noma'lum")
     level = acc.get('level', "Noma'lum")
     liked = acc.get('liked', "0")
-    created_at = translate_uzbek_datetime(acc.get('createAt'))
-    last_login = translate_uzbek_datetime(acc.get('lastLoginAt'))
+    created_at = format_unix_date(acc.get('createAt'))
+    last_login = format_unix_date(acc.get('lastLoginAt'))
 
     result_text = f"""┌ 🌐 **Region Ma'lumotlari (Region Information)**
 ├─ 🆔 UID: `{account_id}`
