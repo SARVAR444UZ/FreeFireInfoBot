@@ -11,6 +11,7 @@ from aiogram.types import BufferedInputFile
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 import aiohttp
 from aiohttp import web
+from supabase import create_client, Client
 
 TOKEN = "8925245187:AAHhXQpOq8xiH-WBJMWyjen8CjtttxkiMU4"
 OWNER_ID = 8659710238  # Bot egasining ID si
@@ -19,10 +20,21 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- LOKAL FAYL BAZALARI (endi tashqi API o'rniga shu serverning o'zidagi
-# .txt fayllarga yoziladi) ---
-USERS_DB_FILE = "users_db.txt"          # /rek buyrug'i uchun barcha chat ID'lar
-LOCAL_BACKUP_FILE = "majburiy_backup.txt"  # majburiy a'zolik kanal/guruh ID'lari
+# ==========================================
+# 🗄️ SUPABASE ULANISHI
+# ==========================================
+# users jadvali: id (auto), chat_id (unique bo'lishi SHART - upsert shuning uchun ishlaydi)
+# majburiy jadvali: id (auto), channel_id (unique bo'lishi SHART), title, username
+#
+# DIQQAT: Supabase'da SQL Editor orqali quyidagini bir marta bajaring, aks holda
+# upsert() amali dublikatlarni oldini ololmaydi:
+#   ALTER TABLE users ADD CONSTRAINT users_chat_id_key UNIQUE (chat_id);
+#   ALTER TABLE majburiy ADD CONSTRAINT majburiy_channel_id_key UNIQUE (channel_id);
+
+SUPABASE_URL = "https://ybyjpcmvmgrbwupyordo.supabase.co"
+SUPABASE_KEY = "sb_publishable_CG7mnSkSh-qxriZQgh5RdQ_-ds70rCP"
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- RENDER UCHUN KEEP-ALIVE SOZLAMALARI ---
 SELF_URL = os.environ.get("RENDER_EXTERNAL_URL")
@@ -60,130 +72,92 @@ class Cmd(BaseFilter):
         return cmd is not None and cmd in self.commands
 
 # ==========================================
-# 💾 UMUMIY FOYDALANUVCHILAR BAZASI (lokal .txt fayl)
+# 💾 FOYDALANUVCHILAR BAZASI (Supabase: "users" jadvali)
 # ==========================================
 # Bu bazadan faqat /rek (reklama) buyrug'i uchun barcha chat ID'lar olinadi.
+# supabase-py sinxron kutubxona bo'lgani uchun asyncio.to_thread() bilan
+# alohida threadda ishga tushiramiz — shunda bot event loop bloklanmaydi.
 
-def _read_users_ids():
-    ids = set()
+def _db_add_id_sync(chat_id: int) -> bool:
     try:
-        with open(USERS_DB_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    ids.add(line)
-    except FileNotFoundError:
-        pass
-    return ids
-
-def _write_users_ids(ids):
-    with open(USERS_DB_FILE, "w", encoding="utf-8") as f:
-        for i in ids:
-            f.write(i + "\n")
-
-async def db_add_id(session: aiohttp.ClientSession, chat_id: int):
-    """Yangi chat (user, guruh, kanal) ID'sini lokal faylga qo'shadi"""
-    try:
-        ids = _read_users_ids()
-        str_id = str(chat_id)
-        if str_id not in ids:
-            ids.add(str_id)
-            _write_users_ids(ids)
+        supabase.table("users").upsert(
+            {"chat_id": chat_id}, on_conflict="chat_id"
+        ).execute()
         return True
     except Exception as e:
         logging.error(f"DB Add xatosi ({chat_id}): {e}")
         return False
 
-async def db_get_ids(session: aiohttp.ClientSession):
-    """Bazadagi barcha ID'lar ro'yxatini oladi"""
+def _db_get_ids_sync():
     try:
-        return list(_read_users_ids())
+        resp = supabase.table("users").select("chat_id").execute()
+        return [row["chat_id"] for row in (resp.data or [])]
     except Exception as e:
         logging.error(f"DB Get IDs xatosi: {e}")
         return []
 
-async def db_remove_id(session: aiohttp.ClientSession, chat_id):
-    """Inaktiv yoki bloklangan ID'ni bazadan o'chiradi"""
+def _db_remove_id_sync(chat_id) -> bool:
     try:
-        ids = _read_users_ids()
-        ids.discard(str(chat_id))
-        _write_users_ids(ids)
+        supabase.table("users").delete().eq("chat_id", int(chat_id)).execute()
         return True
     except Exception as e:
         logging.error(f"DB Remove xatosi ({chat_id}): {e}")
         return False
 
+async def db_add_id(session: aiohttp.ClientSession, chat_id: int):
+    """Yangi chat (user, guruh, kanal) ID'sini Supabase'ga qo'shadi"""
+    return await asyncio.to_thread(_db_add_id_sync, chat_id)
+
+async def db_get_ids(session: aiohttp.ClientSession):
+    """Bazadagi barcha ID'lar ro'yxatini oladi"""
+    return await asyncio.to_thread(_db_get_ids_sync)
+
+async def db_remove_id(session: aiohttp.ClientSession, chat_id):
+    """Inaktiv yoki bloklangan ID'ni bazadan o'chiradi"""
+    return await asyncio.to_thread(_db_remove_id_sync, chat_id)
+
 # ==========================================
-# 🔔 MAJBURIY A'ZOLIK BAZASI (lokal .txt fayl)
+# 🔔 MAJBURIY A'ZOLIK BAZASI (Supabase: "majburiy" jadvali)
 # ==========================================
 
-def load_local_backup():
-    """Lokal fayldan barcha ID'larni o'qiydi"""
-    ids = []
+def _majburiy_add_id_sync(chat_id, title="", username="") -> bool:
     try:
-        with open(LOCAL_BACKUP_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    ids.append(line.split("|")[0])
-    except FileNotFoundError:
-        pass
-    return ids
-
-def _read_backup_entries():
-    entries = {}
-    try:
-        with open(LOCAL_BACKUP_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    parts = line.split("|")
-                    entries[parts[0]] = line
-    except FileNotFoundError:
-        pass
-    return entries
-
-def save_local_backup_entry(chat_id, title="", username=""):
-    """Bitta ID'ni lokal faylga qo'shadi/yangilaydi"""
-    entries = _read_backup_entries()
-    entries[str(chat_id)] = f"{chat_id}|{title}|{username}"
-    with open(LOCAL_BACKUP_FILE, "w", encoding="utf-8") as f:
-        for line in entries.values():
-            f.write(line + "\n")
-
-def remove_local_backup_entry(chat_id):
-    """Bitta ID'ni lokal fayldan o'chiradi"""
-    entries = _read_backup_entries()
-    entries.pop(str(chat_id), None)
-    with open(LOCAL_BACKUP_FILE, "w", encoding="utf-8") as f:
-        for line in entries.values():
-            f.write(line + "\n")
-
-async def majburiy_add_id(session: aiohttp.ClientSession, chat_id, title="", username=""):
-    """Majburiy azolik kanal/guruh ID'sini lokal faylga qo'shadi"""
-    try:
-        save_local_backup_entry(chat_id, title, username)
+        supabase.table("majburiy").upsert(
+            {"channel_id": int(chat_id), "title": title or "", "username": username or ""},
+            on_conflict="channel_id",
+        ).execute()
         return True
     except Exception as e:
         logging.error(f"Majburiy Add xatosi ({chat_id}): {e}")
         return False
 
-async def majburiy_get_ids(session: aiohttp.ClientSession):
-    """Majburiy azolik uchun barcha kanal/guruh ID'larini oladi"""
+def _majburiy_get_ids_sync():
     try:
-        return load_local_backup()
+        resp = supabase.table("majburiy").select("channel_id").execute()
+        return [row["channel_id"] for row in (resp.data or [])]
     except Exception as e:
         logging.error(f"Majburiy Get IDs xatosi: {e}")
         return []
 
-async def majburiy_remove_id(session: aiohttp.ClientSession, chat_id):
-    """Majburiy azolik ro'yxatidan ID'ni o'chiradi"""
+def _majburiy_remove_id_sync(chat_id) -> bool:
     try:
-        remove_local_backup_entry(chat_id)
+        supabase.table("majburiy").delete().eq("channel_id", int(chat_id)).execute()
         return True
     except Exception as e:
         logging.error(f"Majburiy Remove xatosi ({chat_id}): {e}")
         return False
+
+async def majburiy_add_id(session: aiohttp.ClientSession, chat_id, title="", username=""):
+    """Majburiy azolik kanal/guruh ID'sini Supabase'ga qo'shadi"""
+    return await asyncio.to_thread(_majburiy_add_id_sync, chat_id, title, username)
+
+async def majburiy_get_ids(session: aiohttp.ClientSession):
+    """Majburiy azolik uchun barcha kanal/guruh ID'larini oladi"""
+    return await asyncio.to_thread(_majburiy_get_ids_sync)
+
+async def majburiy_remove_id(session: aiohttp.ClientSession, chat_id):
+    """Majburiy azolik ro'yxatidan ID'ni o'chiradi"""
+    return await asyncio.to_thread(_majburiy_remove_id_sync, chat_id)
 
 # --- BAZAGA AVTOMATIK QO'SHISH MIDDLEWARE ---
 
@@ -206,14 +180,20 @@ async def check_user_subscription(user_id: int, session: aiohttp.ClientSession):
     """Foydalanuvchi hali obuna bo'lmagan kanal/guruh ID'lari ro'yxatini qaytaradi"""
     not_subscribed = []
     channel_ids = await majburiy_get_ids(session)
-    for cid in channel_ids:
+
+    async def _check(cid):
         try:
             member = await bot.get_chat_member(int(cid), user_id)
             if member.status in ("left", "kicked"):
-                not_subscribed.append(cid)
+                return cid
         except Exception:
             # Bot kanalga admin sifatida qo'shilmagan yoki kanal topilmasa ham xatolik chiqmasin
-            not_subscribed.append(cid)
+            return cid
+        return None
+
+    # Barcha kanallarni PARALLEL tekshiramiz (ketma-ket emas) - tezroq javob uchun
+    results = await asyncio.gather(*[_check(cid) for cid in channel_ids])
+    not_subscribed = [cid for cid in results if cid is not None]
     return not_subscribed
 
 async def build_subscription_keyboard(not_subbed_ids):
@@ -289,18 +269,24 @@ async def check_sub_callback(callback: types.CallbackQuery, session: aiohttp.Cli
             pass
 
 # Umumiy matn - /start va /help buyruqlarida bir xil ko'rinishda chiqishi uchun
+# Barcha buyruqlar "/" bilan ko'rsatiladi va har biriga misol qo'shilgan.
 BOT_INFO_TEXT = (
     "👋 **Assalomu alaykum! Botga xush kelibsiz.**\n\n"
     "🤖 **Bot haqida**\n"
     "Bu bot Free Fire o'yinchilari haqida ma'lumot olish uchun mo'ljallangan: "
     "profil ma'lumotlari, ban holati, banner/outfit rasmlari, region va JWT token.\n\n"
     "📜 **Foydalanuvchi buyruqlari:**\n"
-    "├─ `info <uid>` — o'yinchining to'liq profil ma'lumotlari (banner va outfit rasmi bilan)\n"
-    "├─ `bancheck <uid>` — akkauntning ban holatini tekshirish\n"
-    "├─ `banner <uid>` — avatar-banner va live outfit rasmlarini olish\n"
-    "├─ `region <uid>` — akkaunt region va umumiy ma'lumotlari\n"
-    "├─ `token <uid> <parol>` — JWT token olish\n"
-    "└─ `help` — ushbu yordam xabari\n\n"
+    "├─ /info <uid> — o'yinchining to'liq profil ma'lumotlari (banner va outfit rasmi bilan)\n"
+    "│   Masalan: `/info 8530477563`\n"
+    "├─ /bancheck <uid> — akkauntning ban holatini tekshirish\n"
+    "│   Masalan: `/bancheck 8530477563`\n"
+    "├─ /banner <uid> — avatar-banner va live outfit rasmlarini olish\n"
+    "│   Masalan: `/banner 8530477563`\n"
+    "├─ /region <uid> — akkaunt region va umumiy ma'lumotlari\n"
+    "│   Masalan: `/region 8530477563`\n"
+    "├─ /token <uid> <parol> — JWT token olish\n"
+    "│   Masalan: `/token 15088864083 sizning_parolingiz`\n"
+    "└─ /help — ushbu yordam xabari\n\n"
     "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
     "ℹ️ Barcha buyruqlardan foydalanish uchun avval botga majburiy obuna kanallariga "
     "a'zo bo'lishingiz kerak bo'lishi mumkin."
@@ -336,7 +322,7 @@ async def majburiy_command_handler(message: types.Message, session: aiohttp.Clie
     if len(parts) < 2:
         await message.answer(
             "❌ Xato! Kanal yoki guruh username'ini kiritishni unutdingiz.\n"
-            "To'g'ri ishlatish: `majburiy @kanalguruh`",
+            "To'g'ri ishlatish: `/majburiy @kanalguruh`",
             parse_mode="Markdown"
         )
         return
@@ -375,7 +361,7 @@ async def remover_command_handler(message: types.Message, session: aiohttp.Clien
     if len(parts) < 2:
         await message.answer(
             "❌ Xato! Kanal yoki guruh username'ini kiritishni unutdingiz.\n"
-            "To'g'ri ishlatish: `remover @kanalguruh`",
+            "To'g'ri ishlatish: `/remover @kanalguruh`",
             parse_mode="Markdown"
         )
         return
@@ -538,6 +524,8 @@ def translate_booyah_pass(bp_str):
     return bp_str or "Noma'lum"
 
 def combine_banner_and_outfit(banner_bytes, outfit_bytes):
+    """CPU-bog'liq (PIL) amal — event loopni bloklamasligi uchun bu funksiya
+    doim asyncio.to_thread() orqali chaqiriladi (pastga qarang)."""
     try:
         banner_img = Image.open(io.BytesIO(banner_bytes)).convert("RGB")
         outfit_img = Image.open(io.BytesIO(outfit_bytes)).convert("RGB")
@@ -555,30 +543,40 @@ def combine_banner_and_outfit(banner_bytes, outfit_bytes):
         canvas.paste(outfit_img, (0, b_h + gap))
 
         out_buffer = io.BytesIO()
-        canvas.save(out_buffer, format="JPEG", quality=95)
+        canvas.save(out_buffer, format="JPEG", quality=90)
         return out_buffer.getvalue()
     except Exception as e:
         logging.error(f"Rasm birlashtirish xatosi: {e}")
         return banner_bytes or outfit_bytes
 
+async def combine_banner_and_outfit_async(banner_bytes, outfit_bytes):
+    """combine_banner_and_outfit'ni alohida threadda ishga tushiradi, shunda
+    rasm qayta ishlanayotganda bot boshqa foydalanuvchilarga javob berishda
+    to'xtab qolmaydi."""
+    return await asyncio.to_thread(combine_banner_and_outfit, banner_bytes, outfit_bytes)
+
 # --- API SO'ROVLARI ---
+
+# Tashqi Free Fire API'ga so'rovlar uchun umumiy timeout — cheksiz kutib
+# qolmaslik uchun (aks holda bitta sekin so'rov butun handlerni ushlab turadi)
+API_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=5)
 
 async def fetch_json(session, url):
     try:
-        async with session.get(url) as resp:
+        async with session.get(url, timeout=API_TIMEOUT) as resp:
             if resp.status == 200:
                 return await resp.json()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning(f"fetch_json xatosi ({url}): {e}")
     return None
 
 async def fetch_bytes(session, url):
     try:
-        async with session.get(url) as resp:
+        async with session.get(url, timeout=API_TIMEOUT) as resp:
             if resp.status == 200:
                 return await resp.read()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning(f"fetch_bytes xatosi ({url}): {e}")
     return None
 
 # ==========================================
@@ -593,7 +591,7 @@ async def rek_command_handler(message: types.Message, session: aiohttp.ClientSes
 
     # Postga reply qilinganini tekshirish
     if not message.reply_to_message:
-        await message.answer("❌ **Xatolik!** `rek` buyrug'ini yubormoqchi bo'lgan postingizga **reply** (javob) qilib yozing!")
+        await message.answer("❌ **Xatolik!** `/rek` buyrug'ini yubormoqchi bo'lgan postingizga **reply** (javob) qilib yozing!")
         return
 
     target_post = message.reply_to_message
@@ -631,11 +629,11 @@ async def rek_command_handler(message: types.Message, session: aiohttp.ClientSes
             except TelegramRetryAfter as e:
                 # Telegram cheklov qo'ysa kutiladi
                 await asyncio.sleep(e.retry_after)
-            except (TelegramForbiddenError, TelegramBadRequest) as e:
+            except (TelegramForbiddenError, TelegramBadRequest):
                 # Bot bloklangan yoki guruhdan chiqarilgan
                 errors_count = 5
                 break
-            except Exception as e:
+            except Exception:
                 errors_count += 1
                 await asyncio.sleep(1)
 
@@ -664,7 +662,7 @@ async def rek_command_handler(message: types.Message, session: aiohttp.ClientSes
 async def info_command_handler(message: types.Message, session: aiohttp.ClientSession):
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `info 8530477563`", parse_mode="Markdown")
+        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/info 8530477563`", parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
@@ -678,6 +676,10 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
     banner_url = f"https://solanki-info-free-fire-player-statu.vercel.app/avatar-banner?uid={uid}"
     outfit_url = f"https://solanki-info-free-fire-player-statu.vercel.app/player-live-outfits?uid={uid}"
 
+    # 3 ta so'rov PARALLEL yuboriladi (ketma-ket emas) — bu allaqachon tez,
+    # lekin timeout va connection-pool sozlamalari yo'qligi tufayli sekin
+    # so'rovlar hammasini "kutib" qo'yardi. API_TIMEOUT va pastdagi
+    # connector sozlamalari shu muammoni bartaraf etadi.
     data, banner_bytes, outfit_bytes = await asyncio.gather(
         fetch_json(session, info_url),
         fetch_bytes(session, banner_url),
@@ -764,7 +766,8 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
     sent_msg = await message.answer(result_text, parse_mode="Markdown")
 
     if banner_bytes and outfit_bytes:
-        final_image = combine_banner_and_outfit(banner_bytes, outfit_bytes)
+        # Rasm birlashtirish (PIL) endi alohida threadda ishlaydi
+        final_image = await combine_banner_and_outfit_async(banner_bytes, outfit_bytes)
         photo_file = BufferedInputFile(final_image, filename="player_info.jpg")
         await message.answer_photo(
             photo=photo_file,
@@ -776,7 +779,7 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
 async def bancheck_command_handler(message: types.Message, session: aiohttp.ClientSession):
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `bancheck 7429653776`", parse_mode="Markdown")
+        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/bancheck 7429653776`", parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
@@ -816,7 +819,7 @@ async def bancheck_command_handler(message: types.Message, session: aiohttp.Clie
         if ban_type == "Doimiy":
             ban_desc = "Doimiy (Cheksiz ban)"
         elif ban_period and ban_period != "Noma'lum" and ban_period != "Mavjud emas":
-            ban_desc =  "Umrbod Ban" 
+            ban_desc = "Umrbod Ban"
         else:
             ban_desc = "Umrbod Ban"
 
@@ -835,7 +838,7 @@ async def bancheck_command_handler(message: types.Message, session: aiohttp.Clie
 async def banner_command_handler(message: types.Message, session: aiohttp.ClientSession):
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `banner 7429653776`", parse_mode="Markdown")
+        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/banner 7429653776`", parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
@@ -879,7 +882,7 @@ async def banner_command_handler(message: types.Message, session: aiohttp.Client
 async def region_command_handler(message: types.Message, session: aiohttp.ClientSession):
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `region 8530477563`", parse_mode="Markdown")
+        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/region 8530477563`", parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
@@ -921,7 +924,7 @@ async def region_command_handler(message: types.Message, session: aiohttp.Client
 async def token_command_handler(message: types.Message, session: aiohttp.ClientSession):
     command_parts = message.text.split(maxsplit=2)
     if len(command_parts) < 3:
-        await message.answer("❌ Xato! UID va parolni kiritishni unutdingiz.\nTo'g'ri ishlatish: `token 15088864083 sizning_parolingiz`", parse_mode="Markdown")
+        await message.answer("❌ Xato! UID va parolni kiritishni unutdingiz.\nTo'g'ri ishlatish: `/token 15088864083 sizning_parolingiz`", parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
@@ -1007,7 +1010,13 @@ async def self_ping_loop(session: aiohttp.ClientSession):
 # --- MAIN RUNNER ---
 
 async def main():
-    async with aiohttp.ClientSession() as session:
+    # TCPConnector: ulanishlarni qayta ishlatadi (keep-alive) va DNS'ni
+    # keshlaydi — bu tashqi Free Fire API'ga so'rovlarni sezilarli tezlashtiradi,
+    # ayniqsa bir vaqtda bir nechta foydalanuvchi buyruq yuborganda.
+    connector = aiohttp.TCPConnector(limit=100, limit_per_host=50, ttl_dns_cache=300)
+    session_timeout = aiohttp.ClientTimeout(total=20)
+
+    async with aiohttp.ClientSession(connector=connector, timeout=session_timeout) as session:
         # Middleware'lar
         dp.message.outer_middleware(AutoRegisterMiddleware())
         dp.message.outer_middleware(ForceSubscribeMiddleware())
