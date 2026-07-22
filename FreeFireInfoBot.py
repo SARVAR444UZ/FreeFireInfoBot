@@ -14,7 +14,7 @@ from aiohttp import web
 from supabase import create_client, Client
 
 TOKEN = "8925245187:AAHhXQpOq8xiH-WBJMWyjen8CjtttxkiMU4"
-OWNER_ID = 6194799514  # Bot egasining ID si
+OWNER_ID = 8659710238  # Bot egasining ID si
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
