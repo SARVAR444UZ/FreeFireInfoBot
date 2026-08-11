@@ -7,7 +7,14 @@ from datetime import datetime
 from PIL import Image
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.filters import Command, BaseFilter
-from aiogram.types import BufferedInputFile
+from aiogram.types import (
+    BufferedInputFile,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    ChosenInlineResult,
+    InputMediaPhoto,
+)
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 import aiohttp
 from aiohttp import web
@@ -20,16 +27,28 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Bot @username'i - inline deep-link va h.k. uchun kerak. main() ichida
+# bot.get_me() orqali avtomatik to'ldiriladi, shu bilan birga qo'lda ham
+# o'zgartirishingiz mumkin.
+BOT_USERNAME = "FreeFire2026Chat"
+
 # ==========================================
 # 🗄️ SUPABASE ULANISHI
 # ==========================================
 # users jadvali: id (auto), chat_id (unique bo'lishi SHART - upsert shuning uchun ishlaydi)
 # majburiy jadvali: id (auto), channel_id (unique bo'lishi SHART), title, username
+# user_lang jadvali (YANGI - ko'p tillilik uchun): id (auto), user_id (unique bo'lishi SHART), lang
 #
 # DIQQAT: Supabase'da SQL Editor orqali quyidagini bir marta bajaring, aks holda
 # upsert() amali dublikatlarni oldini ololmaydi:
 #   ALTER TABLE users ADD CONSTRAINT users_chat_id_key UNIQUE (chat_id);
 #   ALTER TABLE majburiy ADD CONSTRAINT majburiy_channel_id_key UNIQUE (channel_id);
+#
+#   CREATE TABLE IF NOT EXISTS user_lang (
+#       id BIGSERIAL PRIMARY KEY,
+#       user_id BIGINT NOT NULL UNIQUE,
+#       lang TEXT NOT NULL DEFAULT 'uz'
+#   );
 
 SUPABASE_URL = "https://ybyjpcmvmgrbwupyordo.supabase.co"
 SUPABASE_KEY = "sb_publishable_CG7mnSkSh-qxriZQgh5RdQ_-ds70rCP"
@@ -46,7 +65,7 @@ SELF_URL = os.environ.get("RENDER_EXTERNAL_URL")
 # Botning barcha tan oladigan komandalari (slashsiz, kichik harflarda)
 KNOWN_COMMANDS = {
     "start", "help", "info", "bancheck", "banner",
-    "region", "token", "rek", "majburiy", "remover", "royxat"
+    "region", "token", "rek", "majburiy", "remover", "royxat", "setlang"
 }
 
 def extract_command(text: str):
@@ -70,6 +89,443 @@ class Cmd(BaseFilter):
     async def __call__(self, message: types.Message):
         cmd = extract_command(message.text)
         return cmd is not None and cmd in self.commands
+
+# ==========================================
+# 🌐 KO'P TILLI TIZIM (uz / en)
+# ==========================================
+# Til matnlari shu yerda saqlanadi. Yangi til qo'shish uchun TR ga yangi
+# kalit (masalan "ru") qo'shib, quyidagi barcha kalitlarni tarjima qilish
+# kifoya - qolgan kod avtomatik ishlay boshlaydi.
+
+DEFAULT_LANG = "uz"
+SUPPORTED_LANGS = ("uz", "en")
+
+BOT_INFO_TEXT_UZ = (
+    "👋 **Assalomu alaykum! Botga xush kelibsiz.**\n\n"
+    "🤖 **Bot haqida**\n"
+    "Bu bot Free Fire o'yinchilari haqida ma'lumot olish uchun mo'ljallangan: "
+    "profil ma'lumotlari, ban holati, banner/outfit rasmlari, region va JWT token.\n\n"
+    "📜 **Foydalanuvchi buyruqlari:**\n"
+    "├─ /info <uid> — o'yinchining to'liq profil ma'lumotlari (banner va outfit rasmi bilan)\n"
+    "│   Masalan: `/info 8530477563`\n"
+    "├─ /bancheck <uid> — akkauntning ban holatini tekshirish\n"
+    "│   Masalan: `/bancheck 8530477563`\n"
+    "├─ /banner <uid> — avatar-banner va live outfit rasmlarini olish\n"
+    "│   Masalan: `/banner 8530477563`\n"
+    "├─ /region <uid> — akkaunt region va umumiy ma'lumotlari\n"
+    "│   Masalan: `/region 8530477563`\n"
+    "├─ /token <uid> <parol> — JWT token olish\n"
+    "│   Masalan: `/token 15088864083 sizning_parolingiz`\n"
+    "├─ /setlang — bot tilini tanlash (🇺🇿 / 🇬🇧)\n"
+    "└─ /help — ushbu yordam xabari\n\n"
+    "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
+    "ℹ️ Botni inline rejimda ham ishlatishingiz mumkin: istalgan chatda "
+    f"`@{BOT_USERNAME} info 123` deb yozing.\n"
+    "ℹ️ Barcha buyruqlardan foydalanish uchun avval botga majburiy obuna kanallariga "
+    "a'zo bo'lishingiz kerak bo'lishi mumkin."
+)
+
+BOT_INFO_TEXT_EN = (
+    "👋 **Hello! Welcome to the bot.**\n\n"
+    "🤖 **About the bot**\n"
+    "This bot provides information about Free Fire players: profile info, "
+    "ban status, banner/outfit images, region and JWT token.\n\n"
+    "📜 **User commands:**\n"
+    "├─ /info <uid> — full player profile (with banner and outfit image)\n"
+    "│   Example: `/info 8530477563`\n"
+    "├─ /bancheck <uid> — check the account's ban status\n"
+    "│   Example: `/bancheck 8530477563`\n"
+    "├─ /banner <uid> — get avatar-banner and live outfit images\n"
+    "│   Example: `/banner 8530477563`\n"
+    "├─ /region <uid> — account region and general info\n"
+    "│   Example: `/region 8530477563`\n"
+    "├─ /token <uid> <password> — get a JWT token\n"
+    "│   Example: `/token 15088864083 your_password`\n"
+    "├─ /setlang — choose the bot's language (🇺🇿 / 🇬🇧)\n"
+    "└─ /help — this help message\n\n"
+    "ℹ️ You can send commands with `/` (`/info 123`) or without it (`info 123`).\n"
+    "ℹ️ You can also use the bot in inline mode: type "
+    f"`@{BOT_USERNAME} info 123` in any chat.\n"
+    "ℹ️ You may need to subscribe to required channels before using the bot's commands."
+)
+
+TR = {
+    "uz": {
+        "start_help": BOT_INFO_TEXT_UZ,
+        "uid_missing": "❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `{example}`",
+        "uid_invalid": "❌ UID faqat raqamlardan iborat bo'lishi kerak!",
+        "not_found": "❌ Bu UID bo'yicha ma'lumot topilmadi.",
+        "loading_info": "🔍 Ma'lumotlar yuklanmoqda...",
+        "loading_ban": "🔍 Ban holati tekshirilmoqda...",
+        "loading_photos": "🔍 Rasmlar yuklanmoqda...",
+        "loading_region": "🔍 Region ma'lumotlari yuklanmoqda...",
+        "loading_token": "🔑 JWT Token olinmoqda...",
+        "token_missing": (
+            "❌ Xato! UID va parolni kiritishni unutdingiz.\n"
+            "To'g'ri ishlatish: `/token 15088864083 sizning_parolingiz`"
+        ),
+        "token_failed": "❌ Token olib bo'lmadi! UID yoki parol xato.",
+        "photos_failed": "❌ Rasmlarni yuklab bo'lmadi.",
+        "setlang_prompt": "🌐 Tilni tanlang:",
+        "setlang_set": "✅ Til o'zbekcha qilib o'rnatildi.",
+        "need_sub_inline": "⚠️ Avval botga shaxsiy chatda a'zo bo'ling",
+        "gender_male": "Erkak ♂️",
+        "gender_female": "Ayol ♀️",
+        "gender_secret": "Maxfiy 🔒",
+        "bp_free": "Bepul 🆓",
+        "bp_premium": "Premium ⭐",
+        "ban_clean": "🟢 Toza (Ayblov yo'q)",
+        "ban_temp": "⏳ Umrbod bloklangan",
+        "ban_perm": "🚫 Doimiy (Cheksiz) bloklangan",
+        "ban_other": "🔴 Bloklangan",
+        "banned_yes": "🔴 Ha (Bloklangan)",
+        "banned_no": "🟢 Yo'q (Toza)",
+        "ban_type_temp": "Umrbod",
+        "ban_type_perm": "Doimiy",
+        "ban_type_none": "Mavjud emas",
+        "unknown": "Noma'lum",
+        "info_caption": "🖼 **Avatar & Banner hamda Live Outfits**",
+        "banner_caption1": "🖼 Avatar va Banner",
+        "banner_caption2": "👕 O'yinchining kiyimlari (Live Outfits)",
+        "banner_caption_combined": "🖼 Avatar, Banner va Live Outfits",
+        "inline_help_title": "ℹ️ Yordam / barcha buyruqlar",
+        "inline_help_desc": "Bot haqida to'liq ma'lumot",
+        "inline_info_title": "🎮 /info <uid> — to'liq profil",
+        "inline_info_desc": "Masalan: info 8530477563",
+        "inline_bancheck_title": "🚫 /bancheck <uid> — ban tekshirish",
+        "inline_bancheck_desc": "Masalan: bancheck 8530477563",
+        "inline_banner_title": "🖼 /banner <uid> — rasm(lar)",
+        "inline_banner_desc": "Masalan: banner 8530477563",
+        "inline_region_title": "🌍 /region <uid> — region ma'lumoti",
+        "inline_region_desc": "Masalan: region 8530477563",
+        "inline_token_title": "🔑 /token <uid> <parol> — JWT token",
+        "inline_token_desc": "Masalan: token 15088864083 parol",
+        "inline_uid_invalid_title": "❌ UID noto'g'ri",
+        "inline_uid_invalid_desc": "UID faqat raqamlardan iborat bo'lishi kerak",
+        "inline_not_found_title": "❌ Ma'lumot topilmadi",
+        "inline_not_found_desc": "Bu UID bo'yicha hech narsa topilmadi",
+        "inline_loading_title": "⏳ Yuklanmoqda...",
+        "inline_loading_desc": "Tanlansangiz rasm biriktiriladi",
+        "inline_token_missing_desc": "token <uid> <parol> shaklida yozing",
+        "info_template": (
+            "🎮 **FREE FIRE PLAYER INFO**\n\n"
+            "┌ 👤 **Asosiy Ma'lumotlar**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nik: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Daraja: `{level}` (Keyingi darajaga: `{exp_needed}`)\n"
+            "├─ ✨ Tajriba (Exp): `{exp}` (Progress: `{progress}`)\n"
+            "├─ ⏳ Akkaunt yoshi: `{acc_age}`\n"
+            "├─ 📅 Yaratilgan vaqti: `{created_at}`\n"
+            "├─ 🚪 Oxirgi kirish: `{last_login}`\n"
+            "├─ ❤️ Layklar: `{liked}`\n"
+            "├─ 🏅 Rank: `{rank}` | Max: `{max_rank}`\n"
+            "├─ 📊 Reyting ballari: `{ranking_points}`\n"
+            "├─ ⚔️ CS Rank: `{cs_rank}` | CS Max: `{cs_max_rank}`\n"
+            "├─ 🎟 Booyah Pass: `{booyah_pass}`\n"
+            "├─ 🎖 Unvon: `{title_name}`\n"
+            "├─ 🖼 Avatar: `{avatar_name}`\n"
+            "├─ 🚩 Banner: `{banner_name}`\n"
+            "└─ 📌 Pin: `{pin_name}`\n\n"
+            "┌ 👕 **Profil Jihozlari**\n"
+            "├─ 🎨 Teri rangi: `{skin_color}`\n"
+            "├─ 👗 Kiyimlar ID: `{clothes}`\n"
+            "├─ ⚡ Qobiliyatlar ID: `{equipped_skills}`\n"
+            "└─ 🔓 Qulfdan chiqish vaqti: `{unlock_time}`\n\n"
+            "┌ 🛡 **Klan (Guild) Ma'lumotlari**\n"
+            "├─ 🏰 Nomi: `{clan_name}` (ID: `{clan_id}`)\n"
+            "├─ 👑 Lider: `{captain_nickname}` (UID: `{captain_id}`)\n"
+            "├─ 📊 Klan darajasi: `{clan_level}`\n"
+            "└─ 👥 A'zolar: `{member_num} / {capacity}`\n\n"
+            "┌ 💯 **Kredit Reyting**\n"
+            "├─ 📈 Ball: `{credit_score}`\n"
+            "└─ 🎁 Mukofot holati: `{reward_state}`\n\n"
+            "┌ 🐾 **Uy Hayvoni (Pet)**\n"
+            "├─ 🐕 Nomi: `{pet_name}`\n"
+            "└─ 📈 Darajasi: `{pet_level}` (Exp: `{pet_exp}`)\n\n"
+            "┌ 💬 **Ijtimoiy Ma'lumotlar**\n"
+            "├─ 🌐 Til: `{language}`\n"
+            "├─ 🌙 Faollik vaqti: `{time_active}`\n"
+            "├─ ✍️ Status (Imzo): `{signature}`\n"
+            "└─ 👤 Jinsi: `{gender}`\n\n"
+            "┌ 🚫 **Ban Holati**\n"
+            "├─ 🔒 Ban Holati: `{ban_status}`\n"
+            "├─ 🚫 Bloklanganmi?: `{is_banned}`\n"
+            "├─ ⚠️ Ban turi: `{ban_type}`\n"
+            "└─ ⏳ Ban bo'lgan oy: `{ban_period}`"
+        ),
+        "bancheck_clean_template": (
+            "┌ 🚫 **Ban Tekshiruvi (Bancheck Info)**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nik: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Daraja: `{level}`\n"
+            "├─ ❤️ Layklar: `{liked}`\n"
+            "└─ 🔒 Holati: Toza (Bloklanmagan) 🟢"
+        ),
+        "bancheck_banned_template": (
+            "┌ 🚫 **Ban Tekshiruvi (Bancheck Info)**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nik: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Daraja: `{level}`\n"
+            "├─ ❤️ Layklar: `{liked}`\n"
+            "├─ 🔒 Holati: Bloklangan 🔴\n"
+            "└─ ⏳ Ban muddati: `{ban_desc}`"
+        ),
+        "ban_desc_perm": "Doimiy (Cheksiz ban)",
+        "ban_desc_temp": "Umrbod Ban",
+        "region_template": (
+            "┌ 🌐 **Region Ma'lumotlari (Region Information)**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nik: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Daraja: `{level}`\n"
+            "├─ ❤️ Layklar: `{liked}`\n"
+            "├─ 📅 Yaratilgan: `{created_at}`\n"
+            "└─ 🚪 Oxirgi kirish: `{last_login}`"
+        ),
+        "token_template": (
+            "┌ 🔑 **JWT Token Ma'lumotlari (JWT Information)**\n"
+            "├─ 🆔 Akkaunt ID: `{account_id}`\n"
+            "├─ 🌐 IP Region: `{ip_region}`\n"
+            "├─ 🔒 Qulflangan Region: `{lock_region}`\n"
+            "├─ 🔔 Bildirishnoma Region: `{noti_region}`\n"
+            "├─ 🎮 Agora Muhiti: `{agora_env}`\n"
+            "├─ 🖥️ Server Havolasi: `{server_url}`\n"
+            "├─ 🗝️ OpenID: `{openid}`\n"
+            "├─ ⏱️ Amal qilish vaqti (TTL): `{ttl}`\n"
+            "├─ 🎫 Access Token: `{access_token}`\n"
+            "└─ 🔐 Token (JWT): `{token}`"
+        ),
+        "sub_prompt": (
+            "⚠️ **Botdan foydalanish uchun quyidagi kanal/guruhlarga obuna bo'lishingiz shart!**\n\n"
+            "Obuna bo'lgach, pastdagi \"✅ Obuna bo'ldim, tekshirish\" tugmasini bosing."
+        ),
+        "sub_check_button": "✅ Obuna bo'ldim, tekshirish",
+        "sub_not_yet": "❌ Siz hali barcha kanal/guruhlarga obuna bo'lmagansiz!",
+        "sub_confirmed": "✅ Obuna tasdiqlandi! Endi botdan to'liq foydalanishingiz mumkin.",
+    },
+    "en": {
+        "start_help": BOT_INFO_TEXT_EN,
+        "uid_missing": "❌ Error! You forgot to enter a UID.\nCorrect usage: `{example}`",
+        "uid_invalid": "❌ UID must contain digits only!",
+        "not_found": "❌ No data found for this UID.",
+        "loading_info": "🔍 Loading data...",
+        "loading_ban": "🔍 Checking ban status...",
+        "loading_photos": "🔍 Loading images...",
+        "loading_region": "🔍 Loading region info...",
+        "loading_token": "🔑 Getting JWT token...",
+        "token_missing": (
+            "❌ Error! You forgot to enter the UID and password.\n"
+            "Correct usage: `/token 15088864083 your_password`"
+        ),
+        "token_failed": "❌ Could not get the token! Wrong UID or password.",
+        "photos_failed": "❌ Could not load the images.",
+        "setlang_prompt": "🌐 Choose your language:",
+        "setlang_set": "✅ Language set to English.",
+        "need_sub_inline": "⚠️ Please subscribe first via the bot's private chat",
+        "gender_male": "Male ♂️",
+        "gender_female": "Female ♀️",
+        "gender_secret": "Hidden 🔒",
+        "bp_free": "Free 🆓",
+        "bp_premium": "Premium ⭐",
+        "ban_clean": "🟢 Clean (No violations)",
+        "ban_temp": "⏳ Temporarily banned",
+        "ban_perm": "🚫 Permanently banned",
+        "ban_other": "🔴 Banned",
+        "banned_yes": "🔴 Yes (Banned)",
+        "banned_no": "🟢 No (Clean)",
+        "ban_type_temp": "Temporary",
+        "ban_type_perm": "Permanent",
+        "ban_type_none": "None",
+        "unknown": "Unknown",
+        "info_caption": "🖼 **Avatar & Banner and Live Outfits**",
+        "banner_caption1": "🖼 Avatar and Banner",
+        "banner_caption2": "👕 Player's Live Outfits",
+        "banner_caption_combined": "🖼 Avatar, Banner and Live Outfits",
+        "inline_help_title": "ℹ️ Help / all commands",
+        "inline_help_desc": "Full information about the bot",
+        "inline_info_title": "🎮 /info <uid> — full profile",
+        "inline_info_desc": "Example: info 8530477563",
+        "inline_bancheck_title": "🚫 /bancheck <uid> — check ban",
+        "inline_bancheck_desc": "Example: bancheck 8530477563",
+        "inline_banner_title": "🖼 /banner <uid> — image(s)",
+        "inline_banner_desc": "Example: banner 8530477563",
+        "inline_region_title": "🌍 /region <uid> — region info",
+        "inline_region_desc": "Example: region 8530477563",
+        "inline_token_title": "🔑 /token <uid> <password> — JWT token",
+        "inline_token_desc": "Example: token 15088864083 password",
+        "inline_uid_invalid_title": "❌ Invalid UID",
+        "inline_uid_invalid_desc": "UID must contain digits only",
+        "inline_not_found_title": "❌ Not found",
+        "inline_not_found_desc": "Nothing found for this UID",
+        "inline_loading_title": "⏳ Loading...",
+        "inline_loading_desc": "Image will be attached once selected",
+        "inline_token_missing_desc": "Type it as: token <uid> <password>",
+        "info_template": (
+            "🎮 **FREE FIRE PLAYER INFO**\n\n"
+            "┌ 👤 **Main Info**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nickname: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Level: `{level}` (Exp needed for next level: `{exp_needed}`)\n"
+            "├─ ✨ Exp: `{exp}` (Progress: `{progress}`)\n"
+            "├─ ⏳ Account age: `{acc_age}`\n"
+            "├─ 📅 Created at: `{created_at}`\n"
+            "├─ 🚪 Last login: `{last_login}`\n"
+            "├─ ❤️ Likes: `{liked}`\n"
+            "├─ 🏅 Rank: `{rank}` | Max: `{max_rank}`\n"
+            "├─ 📊 Ranking points: `{ranking_points}`\n"
+            "├─ ⚔️ CS Rank: `{cs_rank}` | CS Max: `{cs_max_rank}`\n"
+            "├─ 🎟 Booyah Pass: `{booyah_pass}`\n"
+            "├─ 🎖 Title: `{title_name}`\n"
+            "├─ 🖼 Avatar: `{avatar_name}`\n"
+            "├─ 🚩 Banner: `{banner_name}`\n"
+            "└─ 📌 Pin: `{pin_name}`\n\n"
+            "┌ 👕 **Profile Gear**\n"
+            "├─ 🎨 Skin color: `{skin_color}`\n"
+            "├─ 👗 Clothes ID: `{clothes}`\n"
+            "├─ ⚡ Skills ID: `{equipped_skills}`\n"
+            "└─ 🔓 Unlock time: `{unlock_time}`\n\n"
+            "┌ 🛡 **Guild Info**\n"
+            "├─ 🏰 Name: `{clan_name}` (ID: `{clan_id}`)\n"
+            "├─ 👑 Leader: `{captain_nickname}` (UID: `{captain_id}`)\n"
+            "├─ 📊 Guild level: `{clan_level}`\n"
+            "└─ 👥 Members: `{member_num} / {capacity}`\n\n"
+            "┌ 💯 **Credit Score**\n"
+            "├─ 📈 Score: `{credit_score}`\n"
+            "└─ 🎁 Reward state: `{reward_state}`\n\n"
+            "┌ 🐾 **Pet**\n"
+            "├─ 🐕 Name: `{pet_name}`\n"
+            "└─ 📈 Level: `{pet_level}` (Exp: `{pet_exp}`)\n\n"
+            "┌ 💬 **Social Info**\n"
+            "├─ 🌐 Language: `{language}`\n"
+            "├─ 🌙 Active time: `{time_active}`\n"
+            "├─ ✍️ Signature: `{signature}`\n"
+            "└─ 👤 Gender: `{gender}`\n\n"
+            "┌ 🚫 **Ban Status**\n"
+            "├─ 🔒 Ban status: `{ban_status}`\n"
+            "├─ 🚫 Banned?: `{is_banned}`\n"
+            "├─ ⚠️ Ban type: `{ban_type}`\n"
+            "└─ ⏳ Ban period: `{ban_period}`"
+        ),
+        "bancheck_clean_template": (
+            "┌ 🚫 **Bancheck Info**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nickname: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Level: `{level}`\n"
+            "├─ ❤️ Likes: `{liked}`\n"
+            "└─ 🔒 Status: Clean (Not banned) 🟢"
+        ),
+        "bancheck_banned_template": (
+            "┌ 🚫 **Bancheck Info**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nickname: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Level: `{level}`\n"
+            "├─ ❤️ Likes: `{liked}`\n"
+            "├─ 🔒 Status: Banned 🔴\n"
+            "└─ ⏳ Ban duration: `{ban_desc}`"
+        ),
+        "ban_desc_perm": "Permanent (unlimited ban)",
+        "ban_desc_temp": "Temporary ban",
+        "region_template": (
+            "┌ 🌐 **Region Information**\n"
+            "├─ 🆔 UID: `{account_id}`\n"
+            "├─ 🏷 Nickname: `{nickname}`\n"
+            "├─ 🌍 Region: `{region}`\n"
+            "├─ ⭐ Level: `{level}`\n"
+            "├─ ❤️ Likes: `{liked}`\n"
+            "├─ 📅 Created: `{created_at}`\n"
+            "└─ 🚪 Last login: `{last_login}`"
+        ),
+        "token_template": (
+            "┌ 🔑 **JWT Token Information**\n"
+            "├─ 🆔 Account ID: `{account_id}`\n"
+            "├─ 🌐 IP Region: `{ip_region}`\n"
+            "├─ 🔒 Locked Region: `{lock_region}`\n"
+            "├─ 🔔 Notification Region: `{noti_region}`\n"
+            "├─ 🎮 Agora Environment: `{agora_env}`\n"
+            "├─ 🖥️ Server URL: `{server_url}`\n"
+            "├─ 🗝️ OpenID: `{openid}`\n"
+            "├─ ⏱️ TTL: `{ttl}`\n"
+            "├─ 🎫 Access Token: `{access_token}`\n"
+            "└─ 🔐 Token (JWT): `{token}`"
+        ),
+        "sub_prompt": (
+            "⚠️ **You must subscribe to the following channel(s)/group(s) to use the bot!**\n\n"
+            "Once subscribed, tap the \"✅ I subscribed, check\" button below."
+        ),
+        "sub_check_button": "✅ I subscribed, check",
+        "sub_not_yet": "❌ You haven't subscribed to all the required channels/groups yet!",
+        "sub_confirmed": "✅ Subscription confirmed! You can now fully use the bot.",
+    },
+}
+
+def t(key: str, lang: str, **kwargs) -> str:
+    """Berilgan til uchun matnni oladi. Til yoki kalit topilmasa 'en' ga,
+    keyin xom kalit nomiga tushadi - shu bilan bot hech qachon xatolik
+    bermay, faqat tarjima yetishmasa inglizcha ko'rsatadi."""
+    lang = lang if lang in TR else DEFAULT_LANG
+    template = TR.get(lang, {}).get(key)
+    if template is None:
+        template = TR.get("en", {}).get(key, key)
+    try:
+        return template.format(**kwargs) if kwargs else template
+    except (KeyError, IndexError):
+        return template
+
+# --- FOYDALANUVCHI TILI: SAQLASH VA O'QISH (Supabase: "user_lang" jadvali) ---
+
+_LANG_CACHE: dict[int, str] = {}  # user_id -> lang (jarayon xotirasida keshlash)
+
+def _get_user_lang_sync(user_id: int):
+    try:
+        resp = supabase.table("user_lang").select("lang").eq("user_id", user_id).limit(1).execute()
+        if resp.data:
+            return resp.data[0].get("lang")
+    except Exception as e:
+        logging.error(f"Til o'qish xatosi ({user_id}): {e}")
+    return None
+
+def _set_user_lang_sync(user_id: int, lang: str) -> bool:
+    try:
+        supabase.table("user_lang").upsert(
+            {"user_id": user_id, "lang": lang}, on_conflict="user_id"
+        ).execute()
+        return True
+    except Exception as e:
+        logging.error(f"Til yozish xatosi ({user_id}): {e}")
+        return False
+
+async def get_user_lang(user_id: int, chat_type: str = "private") -> str:
+    """Foydalanuvchining tanlagan tilini qaytaradi.
+
+    - Agar foydalanuvchi /setlang orqali tanlagan bo'lsa (chat turidan
+      qat'iy nazar, guruhda ham) o'sha til qaytadi.
+    - Agar hali tanlamagan bo'lsa: guruh/kanalda standart INGLIZCHA,
+      shaxsiy chatda standart O'ZBEKCHA qaytadi (talab shunday edi).
+    """
+    if user_id in _LANG_CACHE:
+        return _LANG_CACHE[user_id]
+
+    lang = await asyncio.to_thread(_get_user_lang_sync, user_id)
+    if lang in SUPPORTED_LANGS:
+        _LANG_CACHE[user_id] = lang
+        return lang
+
+    # Bazada yozuv yo'q - foydalanuvchi hali tilni tanlamagan
+    return "en" if chat_type != "private" else DEFAULT_LANG
+
+async def set_user_lang(user_id: int, lang: str) -> bool:
+    if lang not in SUPPORTED_LANGS:
+        return False
+    ok = await asyncio.to_thread(_set_user_lang_sync, user_id, lang)
+    if ok:
+        _LANG_CACHE[user_id] = lang
+    return ok
 
 # ==========================================
 # 💾 FOYDALANUVCHILAR BAZASI (Supabase: "users" jadvali)
@@ -174,11 +630,10 @@ class AutoRegisterMiddleware(BaseMiddleware):
 # ==========================================
 
 # Bu buyruqlarni majburiy obuna tekshiruvidan chetlab o'tkazamiz (slashsiz nomlar)
-EXEMPT_COMMANDS = ("start", "help")
+EXEMPT_COMMANDS = ("start", "help", "setlang")
 
 async def check_user_subscription(user_id: int, session: aiohttp.ClientSession):
     """Foydalanuvchi hali obuna bo'lmagan kanal/guruh ID'lari ro'yxatini qaytaradi"""
-    not_subscribed = []
     channel_ids = await majburiy_get_ids(session)
 
     async def _check(cid):
@@ -196,7 +651,7 @@ async def check_user_subscription(user_id: int, session: aiohttp.ClientSession):
     not_subscribed = [cid for cid in results if cid is not None]
     return not_subscribed
 
-async def build_subscription_keyboard(not_subbed_ids):
+async def build_subscription_keyboard(not_subbed_ids, lang: str = DEFAULT_LANG):
     """Obuna bo'linmagan kanallar uchun tugmalar ro'yxatini yasaydi"""
     rows = []
     idx = 1
@@ -217,14 +672,13 @@ async def build_subscription_keyboard(not_subbed_ids):
         if link:
             rows.append([types.InlineKeyboardButton(text=f"{idx}- {title}", url=link)])
             idx += 1
-    rows.append([types.InlineKeyboardButton(text="✅ Obuna bo'ldim, tekshirish", callback_data="check_sub")])
+    rows.append([types.InlineKeyboardButton(text=t("sub_check_button", lang), callback_data="check_sub")])
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
-async def send_subscription_prompt(message: types.Message, not_subbed_ids):
-    keyboard = await build_subscription_keyboard(not_subbed_ids)
+async def send_subscription_prompt(message: types.Message, not_subbed_ids, lang: str = DEFAULT_LANG):
+    keyboard = await build_subscription_keyboard(not_subbed_ids, lang)
     await message.answer(
-        "⚠️ **Botdan foydalanish uchun quyidagi kanal/guruhlarga obuna bo'lishingiz shart!**\n\n"
-        "Obuna bo'lgach, pastdagi \"✅ Obuna bo'ldim, tekshirish\" tugmasini bosing.",
+        t("sub_prompt", lang),
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
@@ -238,7 +692,7 @@ class ForceSubscribeMiddleware(BaseMiddleware):
 
             cmd = extract_command(event.text)
 
-            # /start, start kabi ozod buyruqlar
+            # /start, /help, /setlang kabi ozod buyruqlar
             if cmd in EXEMPT_COMMANDS:
                 return await handler(event, data)
 
@@ -247,62 +701,66 @@ class ForceSubscribeMiddleware(BaseMiddleware):
                 session = data.get("session")
                 not_subbed = await check_user_subscription(event.from_user.id, session)
                 if not_subbed:
-                    await send_subscription_prompt(event, not_subbed)
+                    lang = await get_user_lang(event.from_user.id, event.chat.type)
+                    await send_subscription_prompt(event, not_subbed, lang)
                     return
         return await handler(event, data)
 
 @dp.callback_query(lambda c: c.data == "check_sub")
 async def check_sub_callback(callback: types.CallbackQuery, session: aiohttp.ClientSession):
+    lang = await get_user_lang(callback.from_user.id, callback.message.chat.type if callback.message else "private")
     not_subbed = await check_user_subscription(callback.from_user.id, session)
     if not_subbed:
-        keyboard = await build_subscription_keyboard(not_subbed)
-        await callback.answer("❌ Siz hali barcha kanal/guruhlarga obuna bo'lmagansiz!", show_alert=True)
+        keyboard = await build_subscription_keyboard(not_subbed, lang)
+        await callback.answer(t("sub_not_yet", lang), show_alert=True)
         try:
             await callback.message.edit_reply_markup(reply_markup=keyboard)
         except Exception:
             pass
     else:
-        await callback.answer("✅ Obuna tasdiqlandi! Endi botdan to'liq foydalanishingiz mumkin.", show_alert=True)
+        await callback.answer(t("sub_confirmed", lang), show_alert=True)
         try:
             await callback.message.delete()
         except Exception:
             pass
 
-# Umumiy matn - /start va /help buyruqlarida bir xil ko'rinishda chiqishi uchun
-# Barcha buyruqlar "/" bilan ko'rsatiladi va har biriga misol qo'shilgan.
-BOT_INFO_TEXT = (
-    "👋 **Assalomu alaykum! Botga xush kelibsiz.**\n\n"
-    "🤖 **Bot haqida**\n"
-    "Bu bot Free Fire o'yinchilari haqida ma'lumot olish uchun mo'ljallangan: "
-    "profil ma'lumotlari, ban holati, banner/outfit rasmlari, region va JWT token.\n\n"
-    "📜 **Foydalanuvchi buyruqlari:**\n"
-    "├─ /info <uid> — o'yinchining to'liq profil ma'lumotlari (banner va outfit rasmi bilan)\n"
-    "│   Masalan: `/info 8530477563`\n"
-    "├─ /bancheck <uid> — akkauntning ban holatini tekshirish\n"
-    "│   Masalan: `/bancheck 8530477563`\n"
-    "├─ /banner <uid> — avatar-banner va live outfit rasmlarini olish\n"
-    "│   Masalan: `/banner 8530477563`\n"
-    "├─ /region <uid> — akkaunt region va umumiy ma'lumotlari\n"
-    "│   Masalan: `/region 8530477563`\n"
-    "├─ /token <uid> <parol> — JWT token olish\n"
-    "│   Masalan: `/token 15088864083 sizning_parolingiz`\n"
-    "└─ /help — ushbu yordam xabari\n\n"
-    "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
-    "ℹ️ Barcha buyruqlardan foydalanish uchun avval botga majburiy obuna kanallariga "
-    "a'zo bo'lishingiz kerak bo'lishi mumkin."
-)
-
 @dp.message(Cmd("start"))
 async def start_command_handler(message: types.Message):
-    await message.answer(BOT_INFO_TEXT, parse_mode="Markdown")
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
+    await message.answer(t("start_help", lang), parse_mode="Markdown")
 
 @dp.message(Cmd("help"))
 async def help_command_handler(message: types.Message):
-    await message.answer(BOT_INFO_TEXT, parse_mode="Markdown")
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
+    await message.answer(t("start_help", lang), parse_mode="Markdown")
+
+# ==========================================
+# 🌐 /setlang — TIL TANLASH BUYRUG'I
+# ==========================================
+
+@dp.message(Cmd("setlang"))
+async def setlang_command_handler(message: types.Message):
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="setlang_uz"),
+        types.InlineKeyboardButton(text="🇬🇧 English", callback_data="setlang_en"),
+    ]])
+    await message.answer(t("setlang_prompt", lang), reply_markup=keyboard)
+
+@dp.callback_query(lambda c: c.data in ("setlang_uz", "setlang_en"))
+async def setlang_callback_handler(callback: types.CallbackQuery):
+    lang = "uz" if callback.data == "setlang_uz" else "en"
+    await set_user_lang(callback.from_user.id, lang)
+    try:
+        await callback.message.edit_text(t("setlang_set", lang))
+    except Exception:
+        pass
+    await callback.answer()
 
 # ==========================================
 # 🔔 MAJBURIY A'ZOLIK BOSHQARUV BUYRUQLARI (FAQAT OWNER, FAQAT LICHKA)
 # ==========================================
+# Bu buyruqlar faqat bot egasi uchun bo'lgani sababli o'zbekcha qoldirildi.
 
 async def resolve_chat_id(username_or_id: str):
     """@username yoki id orqali chat obyektini topadi"""
@@ -437,22 +895,25 @@ def format_unix_date(timestamp):
     01.01.2026) formatidagi sana matniga aylantiradi. Agar qiymat bo'lmasa
     yoki noto'g'ri formatda bo'lsa, "Noma'lum" qaytaradi."""
     if timestamp in (None, "", 0, "0"):
-        return "Noma'lum"
+        return None
     try:
         ts = int(float(timestamp))
         if ts <= 0:
-            return "Noma'lum"
+            return None
         # Ba'zi API'lar millisekundda qaytarishi mumkin, shuni tekshiramiz
         if ts > 10_000_000_000:
             ts //= 1000
         dt = datetime.utcfromtimestamp(ts)
         return dt.strftime("%d.%m.%Y")
     except (ValueError, TypeError, OSError, OverflowError):
-        return "Noma'lum"
+        return None
 
 def translate_uzbek_datetime(text):
+    """DIQQAT: bu funksiya nomi tarixiy sabablarga ko'ra saqlanib qolgan -
+    faqat "uz" tili uchun ishlatiladi (inglizcha xom matnni o'zbekchaga
+    o'giradi). Inglizcha rejimda xom matn o'zgarishsiz qoldiriladi."""
     if not text or not isinstance(text, str):
-        return text or "Noma'lum"
+        return None
 
     months = {
         'January': 'Yanvar', 'February': 'Fevral', 'March': 'Mart', 'April': 'Aprel',
@@ -476,52 +937,66 @@ def translate_uzbek_datetime(text):
         res = re.sub(r'\b' + eng + r'\b', uz, res, flags=re.IGNORECASE)
     return res.strip()
 
-def translate_gender(gender_str):
+def localize_raw_datetime(text, lang: str):
+    """Xom (API'dan kelgan, odatda inglizcha) sana/vaqt matnini tanlangan
+    tilga moslaydi. uz -> so'zma-so'z o'zbekchaga o'giradi, en -> o'zgarishsiz
+    qoldiradi. Bo'sh bo'lsa tarjima qilingan "unknown" qaytaradi."""
+    if lang == "uz":
+        result = translate_uzbek_datetime(text)
+    else:
+        result = str(text).strip() if text else None
+    return result if result else t("unknown", lang)
+
+def localize_date(timestamp, lang: str):
+    formatted = format_unix_date(timestamp)
+    return formatted if formatted else t("unknown", lang)
+
+def translate_gender(gender_str, lang: str):
     val = str(gender_str).lower().strip()
     if 'male' in val and 'female' not in val:
-        return "Erkak ♂️"
+        return t("gender_male", lang)
     elif 'female' in val:
-        return "Ayol ♀️"
-    return "Maxfiy 🔒"
+        return t("gender_female", lang)
+    return t("gender_secret", lang)
 
-def translate_ban_info(ban):
+def translate_ban_info(ban, lang: str):
     status_raw = str(ban.get('ban_status', '')).lower()
     if 'not banned' in status_raw or 'clean' in status_raw or 'normal' in status_raw or status_raw in ['none', '', '0']:
-        ban_status = "🟢 Toza (Ayblov yo'q)"
+        ban_status = t("ban_clean", lang)
     elif 'temporary' in status_raw:
-        ban_status = "⏳ Umrbod bloklangan"
+        ban_status = t("ban_temp", lang)
     elif 'permanent' in status_raw:
-        ban_status = "🚫 Doimiy (Cheksiz) bloklangan"
+        ban_status = t("ban_perm", lang)
     else:
-        ban_status = "🔴 Bloklangan"
+        ban_status = t("ban_other", lang)
 
     is_banned_raw = str(ban.get('is_banned', '')).lower()
     is_banned = is_banned_raw in ['true', '1', 'yes']
 
     type_raw = str(ban.get('ban_type', '')).lower()
     if 'temporary' in type_raw:
-        ban_type = "Umrbod"
+        ban_type = t("ban_type_temp", lang)
     elif 'permanent' in type_raw:
-        ban_type = "Doimiy"
+        ban_type = t("ban_type_perm", lang)
     elif type_raw in ['not banned', 'none', 'null', '', '0']:
-        ban_type = "Mavjud emas"
+        ban_type = t("ban_type_none", lang)
     else:
-        ban_type = ban.get('ban_type', "Mavjud emas")
+        ban_type = ban.get('ban_type') or t("ban_type_none", lang)
 
     period_raw = ban.get('ban_period') or ban.get('since') or ban.get('period')
-    ban_period = translate_uzbek_datetime(period_raw)
+    ban_period = localize_raw_datetime(period_raw, lang)
 
-    is_banned_str = "🔴 Ha (Bloklangan)" if is_banned else "🟢 Yo'q (Toza)"
+    is_banned_str = t("banned_yes", lang) if is_banned else t("banned_no", lang)
 
     return ban_status, is_banned_str, ban_type, ban_period, is_banned
 
-def translate_booyah_pass(bp_str):
+def translate_booyah_pass(bp_str, lang: str):
     val = str(bp_str).lower()
     if 'free' in val:
-        return "Bepul 🆓"
+        return t("bp_free", lang)
     elif 'premium' in val:
-        return "Premium ⭐"
-    return bp_str or "Noma'lum"
+        return t("bp_premium", lang)
+    return bp_str or t("unknown", lang)
 
 def combine_banner_and_outfit(banner_bytes, outfit_bytes):
     """CPU-bog'liq (PIL) amal — event loopni bloklamasligi uchun bu funksiya
@@ -557,6 +1032,8 @@ async def combine_banner_and_outfit_async(banner_bytes, outfit_bytes):
 
 # --- API SO'ROVLARI ---
 
+FF_API_BASE = "https://solanki-info-free-fire-player-statu.vercel.app"
+
 # Tashqi Free Fire API'ga so'rovlar uchun umumiy timeout — cheksiz kutib
 # qolmaslik uchun (aks holda bitta sekin so'rov butun handlerni ushlab turadi)
 API_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=5)
@@ -578,6 +1055,142 @@ async def fetch_bytes(session, url):
     except Exception as e:
         logging.warning(f"fetch_bytes xatosi ({url}): {e}")
     return None
+
+def build_info_text(data: dict, lang: str) -> str:
+    """/info uchun API javobidan to'liq, tarjima qilingan matnni yasaydi.
+    Bu funksiya oddiy komandada ham, inline rejimda ham ishlatiladi -
+    shunda ikkala joyda natija bir xil bo'ladi."""
+    acc = data.get("AccountInfo", {})
+    prof = data.get("AccountProfileInfo", {})
+    guild = data.get("GuildInfo", {})
+    cap = data.get("CaptainInfo", {})
+    credit = data.get("CreditScoreInfo", {})
+    pet = data.get("PetInfo", {})
+    soc = data.get("SocialInfo", {})
+    ban = data.get("BanStatus", {})
+
+    ban_status, is_banned_str, ban_type, ban_period, _ = translate_ban_info(ban, lang)
+    gender_text = translate_gender(soc.get('genderLabel'), lang)
+    booyah_pass_text = translate_booyah_pass(acc.get('booyahPass'), lang)
+    clean_ranking_points = clean_text(acc.get('rankingPoints')) or t("unknown", lang)
+
+    acc_age = localize_raw_datetime(acc.get('accountAge'), lang)
+    created_at = localize_date(acc.get('createAt'), lang)
+    last_login = localize_date(acc.get('lastLoginAt'), lang)
+    unk = t("unknown", lang)
+
+    return t(
+        "info_template", lang,
+        account_id=acc.get('accountId', unk),
+        nickname=acc.get('nickname', unk),
+        region=acc.get('region', unk),
+        level=acc.get('level', unk),
+        exp_needed=acc.get('ExpNeededForNextLevel', unk),
+        exp=acc.get('exp', unk),
+        progress=acc.get('Progress', unk),
+        acc_age=acc_age,
+        created_at=created_at,
+        last_login=last_login,
+        liked=acc.get('liked', unk),
+        rank=acc.get('rank', unk),
+        max_rank=acc.get('maxRank', unk),
+        ranking_points=clean_ranking_points,
+        cs_rank=acc.get('csRank', unk),
+        cs_max_rank=acc.get('csMaxRank', unk),
+        booyah_pass=booyah_pass_text,
+        title_name=acc.get('titleName', unk),
+        avatar_name=acc.get('avatarName', unk),
+        banner_name=acc.get('bannerName', unk),
+        pin_name=acc.get('pinName', unk),
+        skin_color=prof.get('skinColor', unk),
+        clothes=prof.get('clothes', unk),
+        equipped_skills=prof.get('equipedSkills', unk),
+        unlock_time=prof.get('unlockTime', unk),
+        clan_name=guild.get('clanName', unk),
+        clan_id=guild.get('clanId', unk),
+        captain_nickname=cap.get('nickname', unk),
+        captain_id=cap.get('accountId', unk),
+        clan_level=guild.get('clanLevel', unk),
+        member_num=guild.get('memberNum', unk),
+        capacity=guild.get('capacity', unk),
+        credit_score=credit.get('creditScore', unk),
+        reward_state=credit.get('rewardState', unk),
+        pet_name=pet.get('displayName', unk),
+        pet_level=pet.get('level', unk),
+        pet_exp=pet.get('exp', unk),
+        language=soc.get('languageLabel', unk),
+        time_active=soc.get('timeActiveLabel', unk),
+        signature=soc.get('signature', unk),
+        gender=gender_text,
+        ban_status=ban_status,
+        is_banned=is_banned_str,
+        ban_type=ban_type,
+        ban_period=ban_period,
+    )
+
+def build_bancheck_text(data: dict, lang: str) -> str:
+    acc = data.get("AccountInfo", {})
+    ban = data.get("BanStatus", {})
+    unk = t("unknown", lang)
+
+    ban_status, is_banned_str, ban_type, ban_period, is_banned = translate_ban_info(ban, lang)
+
+    nickname = acc.get('nickname', unk)
+    region = acc.get('region', unk)
+    level = acc.get('level', unk)
+    liked = acc.get('liked', "0")
+    account_id = acc.get('accountId', unk)
+
+    if not is_banned:
+        return t(
+            "bancheck_clean_template", lang,
+            account_id=account_id, nickname=nickname, region=region, level=level, liked=liked
+        )
+
+    if ban_type == t("ban_type_perm", lang):
+        ban_desc = t("ban_desc_perm", lang)
+    else:
+        ban_desc = t("ban_desc_temp", lang)
+
+    return t(
+        "bancheck_banned_template", lang,
+        account_id=account_id, nickname=nickname, region=region, level=level,
+        liked=liked, ban_desc=ban_desc
+    )
+
+def build_region_text(data: dict, lang: str) -> str:
+    acc = data.get("AccountInfo", {})
+    unk = t("unknown", lang)
+
+    account_id = acc.get('accountId', unk)
+    nickname = acc.get('nickname', unk)
+    region = acc.get('region', unk)
+    level = acc.get('level', unk)
+    liked = acc.get('liked', "0")
+    created_at = localize_date(acc.get('createAt'), lang)
+    last_login = localize_date(acc.get('lastLoginAt'), lang)
+
+    return t(
+        "region_template", lang,
+        account_id=account_id, nickname=nickname, region=region, level=level,
+        liked=liked, created_at=created_at, last_login=last_login
+    )
+
+def build_token_text(data: dict, lang: str) -> str:
+    unk = t("unknown", lang)
+    return t(
+        "token_template", lang,
+        account_id=data.get("accountId", unk),
+        ip_region=data.get("ipRegion", unk),
+        lock_region=data.get("lockRegion", unk),
+        noti_region=data.get("notiRegion", unk),
+        agora_env=data.get("agoraEnvironment", unk),
+        server_url=data.get("serverUrl", unk),
+        openid=data.get("openid", unk),
+        ttl=data.get("ttl", unk),
+        access_token=data.get("access_token", unk),
+        token=data.get("token", unk),
+    )
 
 # ==========================================
 # 📢 REKLAMA YUBORISH KOMANDASI (rek)
@@ -660,21 +1273,22 @@ async def rek_command_handler(message: types.Message, session: aiohttp.ClientSes
 
 @dp.message(Cmd("info"))
 async def info_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/info 8530477563`", parse_mode="Markdown")
+        await message.answer(t("uid_missing", lang, example="/info 8530477563"), parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
     if not uid.isdigit():
-        await message.answer("❌ UID faqat raqamlardan iborat bo'lishi kerak!")
+        await message.answer(t("uid_invalid", lang))
         return
 
-    waiting_msg = await message.answer("🔍 Ma'lumotlar yuklanmoqda...")
+    waiting_msg = await message.answer(t("loading_info", lang))
 
-    info_url = f"https://solanki-info-free-fire-player-statu.vercel.app/player-info?uid={uid}"
-    banner_url = f"https://solanki-info-free-fire-player-statu.vercel.app/avatar-banner?uid={uid}"
-    outfit_url = f"https://solanki-info-free-fire-player-statu.vercel.app/player-live-outfits?uid={uid}"
+    info_url = f"{FF_API_BASE}/player-info?uid={uid}"
+    banner_url = f"{FF_API_BASE}/avatar-banner?uid={uid}"
+    outfit_url = f"{FF_API_BASE}/player-live-outfits?uid={uid}"
 
     # 3 ta so'rov PARALLEL yuboriladi (ketma-ket emas) — bu allaqachon tez,
     # lekin timeout va connection-pool sozlamalari yo'qligi tufayli sekin
@@ -687,80 +1301,10 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
     )
 
     if not data:
-        await waiting_msg.edit_text("❌ Bu UID bo'yicha ma'lumot topilmadi.")
+        await waiting_msg.edit_text(t("not_found", lang))
         return
 
-    acc = data.get("AccountInfo", {})
-    prof = data.get("AccountProfileInfo", {})
-    guild = data.get("GuildInfo", {})
-    cap = data.get("CaptainInfo", {})
-    credit = data.get("CreditScoreInfo", {})
-    pet = data.get("PetInfo", {})
-    soc = data.get("SocialInfo", {})
-    ban = data.get("BanStatus", {})
-
-    ban_status, is_banned_str, ban_type, ban_period, _ = translate_ban_info(ban)
-    gender_text = translate_gender(soc.get('genderLabel'))
-    booyah_pass_text = translate_booyah_pass(acc.get('booyahPass'))
-    clean_ranking_points = clean_text(acc.get('rankingPoints'))
-
-    acc_age = translate_uzbek_datetime(acc.get('accountAge'))
-    created_at = format_unix_date(acc.get('createAt'))
-    last_login = format_unix_date(acc.get('lastLoginAt'))
-
-    result_text = f"""🎮 **FREE FIRE PLAYER INFO**
-
-┌ 👤 **Asosiy Ma'lumotlar**
-├─ 🆔 UID: `{acc.get('accountId')}`
-├─ 🏷 Nik: `{acc.get('nickname')}`
-├─ 🌍 Region: `{acc.get('region')}`
-├─ ⭐ Daraja: `{acc.get('level')}` (Keyingi darajaga: `{acc.get('ExpNeededForNextLevel')}`)
-├─ ✨ Tajriba (Exp): `{acc.get('exp')}` (Progress: `{acc.get('Progress')}`)
-├─ ⏳ Akkaunt yoshi: `{acc_age}`
-├─ 📅 Yaratilgan vaqti: `{created_at}`
-├─ 🚪 Oxirgi kirish: `{last_login}`
-├─ ❤️ Layklar: `{acc.get('liked')}`
-├─ 🏅 Rank: `{acc.get('rank')}` | Max: `{acc.get('maxRank')}`
-├─ 📊 Reyting ballari: `{clean_ranking_points}`
-├─ ⚔️ CS Rank: `{acc.get('csRank')}` | CS Max: `{acc.get('csMaxRank')}`
-├─ 🎟 Booyah Pass: `{booyah_pass_text}`
-├─ 🎖 Unvon: `{acc.get('titleName')}`
-├─ 🖼 Avatar: `{acc.get('avatarName')}`
-├─ 🚩 Banner: `{acc.get('bannerName')}`
-└─ 📌 Pin: `{acc.get('pinName')}`
-
-┌ 👕 **Profil Jihozlari**
-├─ 🎨 Teri rangi: `{prof.get('skinColor')}`
-├─ 👗 Kiyimlar ID: `{prof.get('clothes')}`
-├─ ⚡ Qobiliyatlar ID: `{prof.get('equipedSkills')}`
-└─ 🔓 Qulfdan chiqish vaqti: `{prof.get('unlockTime')}`
-
-┌ 🛡 **Klan (Guild) Ma'lumotlari**
-├─ 🏰 Nomi: `{guild.get('clanName')}` (ID: `{guild.get('clanId')}`)
-├─ 👑 Lider: `{cap.get('nickname')}` (UID: `{cap.get('accountId')}`)
-├─ 📊 Klan darajasi: `{guild.get('clanLevel')}`
-└─ 👥 A'zolar: `{guild.get('memberNum')} / {guild.get('capacity')}`
-
-┌ 💯 **Kredit Reyting**
-├─ 📈 Ball: `{credit.get('creditScore')}`
-└─ 🎁 Mukofot holati: `{credit.get('rewardState')}`
-
-┌ 🐾 **Uy Hayvoni (Pet)**
-├─ 🐕 Nomi: `{pet.get('displayName')}`
-└─ 📈 Darajasi: `{pet.get('level')}` (Exp: `{pet.get('exp')}`)
-
-┌ 💬 **Ijtimoiy Ma'lumotlar**
-├─ 🌐 Til: `{soc.get('languageLabel')}`
-├─ 🌙 Faollik vaqti: `{soc.get('timeActiveLabel')}`
-├─ ✍️ Status (Imzo): `{soc.get('signature')}`
-└─ 👤 Jinsi: `{gender_text}`
-
-┌ 🚫 **Ban Holati**
-├─ 🔒 Ban Holati: `{ban_status}`
-├─ 🚫 Bloklanganmi?: `{is_banned_str}`
-├─ ⚠️ Ban turi: `{ban_type}`
-└─ ⏳ Ban bo'lgan oy: `{ban_period}`
-"""
+    result_text = build_info_text(data, lang)
 
     await waiting_msg.delete()
     sent_msg = await message.answer(result_text, parse_mode="Markdown")
@@ -771,85 +1315,53 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
         photo_file = BufferedInputFile(final_image, filename="player_info.jpg")
         await message.answer_photo(
             photo=photo_file,
-            caption="🖼 **Avatar & Banner hamda Live Outfits**",
+            caption=t("info_caption", lang),
+            parse_mode="Markdown",
             reply_to_message_id=sent_msg.message_id
         )
 
 @dp.message(Cmd("bancheck"))
 async def bancheck_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/bancheck 7429653776`", parse_mode="Markdown")
+        await message.answer(t("uid_missing", lang, example="/bancheck 7429653776"), parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
     if not uid.isdigit():
-        await message.answer("❌ UID faqat raqamlardan iborat bo'lishi kerak!")
+        await message.answer(t("uid_invalid", lang))
         return
 
-    waiting_msg = await message.answer("🔍 Ban holati tekshirilmoqda...")
+    waiting_msg = await message.answer(t("loading_ban", lang))
 
-    info_url = f"https://solanki-info-free-fire-player-statu.vercel.app/player-info?uid={uid}"
+    info_url = f"{FF_API_BASE}/player-info?uid={uid}"
     data = await fetch_json(session, info_url)
 
     if not data:
-        await waiting_msg.edit_text("❌ Bu UID bo'yicha ma'lumot topilmadi.")
+        await waiting_msg.edit_text(t("not_found", lang))
         return
 
-    acc = data.get("AccountInfo", {})
-    ban = data.get("BanStatus", {})
-
-    ban_status, is_banned_str, ban_type, ban_period, is_banned = translate_ban_info(ban)
-
-    nickname = acc.get('nickname', "Noma'lum")
-    region = acc.get('region', "Noma'lum")
-    level = acc.get('level', "Noma'lum")
-    liked = acc.get('liked', "0")
-    account_id = acc.get('accountId', uid)
-
-    if not is_banned:
-        result_text = f"""┌ 🚫 **Ban Tekshiruvi (Bancheck Info)**
-├─ 🆔 UID: `{account_id}`
-├─ 🏷 Nik: `{nickname}`
-├─ 🌍 Region: `{region}`
-├─ ⭐ Daraja: `{level}`
-├─ ❤️ Layklar: `{liked}`
-└─ 🔒 Holati: Toza (Bloklanmagan) 🟢"""
-    else:
-        if ban_type == "Doimiy":
-            ban_desc = "Doimiy (Cheksiz ban)"
-        elif ban_period and ban_period != "Noma'lum" and ban_period != "Mavjud emas":
-            ban_desc = "Umrbod Ban"
-        else:
-            ban_desc = "Umrbod Ban"
-
-        result_text = f"""┌ 🚫 **Ban Tekshiruvi (Bancheck Info)**
-├─ 🆔 UID: `{account_id}`
-├─ 🏷 Nik: `{nickname}`
-├─ 🌍 Region: `{region}`
-├─ ⭐ Daraja: `{level}`
-├─ ❤️ Layklar: `{liked}`
-├─ 🔒 Holati: Bloklangan 🔴
-└─ ⏳ Ban muddati: `{ban_desc}`"""
-
+    result_text = build_bancheck_text(data, lang)
     await waiting_msg.edit_text(result_text, parse_mode="Markdown")
 
 @dp.message(Cmd("banner"))
 async def banner_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/banner 7429653776`", parse_mode="Markdown")
+        await message.answer(t("uid_missing", lang, example="/banner 7429653776"), parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
     if not uid.isdigit():
-        await message.answer("❌ UID faqat raqamlardan iborat bo'lishi kerak!")
+        await message.answer(t("uid_invalid", lang))
         return
 
-    waiting_msg = await message.answer("🔍 Rasmlar yuklanmoqda...")
+    waiting_msg = await message.answer(t("loading_photos", lang))
 
-    banner_url = f"https://solanki-info-free-fire-player-statu.vercel.app/avatar-banner?uid={uid}"
-    outfit_url = f"https://solanki-info-free-fire-player-statu.vercel.app/player-live-outfits?uid={uid}"
+    banner_url = f"{FF_API_BASE}/avatar-banner?uid={uid}"
+    outfit_url = f"{FF_API_BASE}/player-live-outfits?uid={uid}"
 
     banner_bytes, outfit_bytes = await asyncio.gather(
         fetch_bytes(session, banner_url),
@@ -859,14 +1371,14 @@ async def banner_command_handler(message: types.Message, session: aiohttp.Client
     await waiting_msg.delete()
 
     if not banner_bytes and not outfit_bytes:
-        await message.answer("❌ Rasmlarni yuklab bo'lmadi.")
+        await message.answer(t("photos_failed", lang))
         return
 
     if banner_bytes:
         file1 = BufferedInputFile(banner_bytes, filename="banner.jpg")
         await message.answer_photo(
             photo=file1,
-            caption="🖼 Avatar va Banner",
+            caption=t("banner_caption1", lang),
             reply_to_message_id=message.message_id
         )
 
@@ -874,99 +1386,305 @@ async def banner_command_handler(message: types.Message, session: aiohttp.Client
         file2 = BufferedInputFile(outfit_bytes, filename="outfit.jpg")
         await message.answer_photo(
             photo=file2,
-            caption="👕 O'yinchining kiyimlari (Live Outfits)",
+            caption=t("banner_caption2", lang),
             reply_to_message_id=message.message_id
         )
 
 @dp.message(Cmd("region"))
 async def region_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
-        await message.answer("❌ Xato! UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/region 8530477563`", parse_mode="Markdown")
+        await message.answer(t("uid_missing", lang, example="/region 8530477563"), parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
     if not uid.isdigit():
-        await message.answer("❌ UID faqat raqamlardan iborat bo'lishi kerak!")
+        await message.answer(t("uid_invalid", lang))
         return
 
-    waiting_msg = await message.answer("🔍 Region ma'lumotlari yuklanmoqda...")
+    waiting_msg = await message.answer(t("loading_region", lang))
 
-    info_url = f"https://solanki-info-free-fire-player-statu.vercel.app/player-info?uid={uid}"
+    info_url = f"{FF_API_BASE}/player-info?uid={uid}"
     data = await fetch_json(session, info_url)
 
     if not data:
-        await waiting_msg.edit_text("❌ Bu UID bo'yicha ma'lumot topilmadi.")
+        await waiting_msg.edit_text(t("not_found", lang))
         return
 
-    acc = data.get("AccountInfo", {})
-
-    account_id = acc.get('accountId', uid)
-    nickname = acc.get('nickname', "Noma'lum")
-    region = acc.get('region', "Noma'lum")
-    level = acc.get('level', "Noma'lum")
-    liked = acc.get('liked', "0")
-    created_at = format_unix_date(acc.get('createAt'))
-    last_login = format_unix_date(acc.get('lastLoginAt'))
-
-    result_text = f"""┌ 🌐 **Region Ma'lumotlari (Region Information)**
-├─ 🆔 UID: `{account_id}`
-├─ 🏷 Nik: `{nickname}`
-├─ 🌍 Region: `{region}`
-├─ ⭐ Daraja: `{level}`
-├─ ❤️ Layklar: `{liked}`
-├─ 📅 Yaratilgan: `{created_at}`
-└─ 🚪 Oxirgi kirish: `{last_login}`"""
-
+    result_text = build_region_text(data, lang)
     await waiting_msg.edit_text(result_text, parse_mode="Markdown")
 
 @dp.message(Cmd("token"))
 async def token_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
     command_parts = message.text.split(maxsplit=2)
     if len(command_parts) < 3:
-        await message.answer("❌ Xato! UID va parolni kiritishni unutdingiz.\nTo'g'ri ishlatish: `/token 15088864083 sizning_parolingiz`", parse_mode="Markdown")
+        await message.answer(t("token_missing", lang), parse_mode="Markdown")
         return
 
     uid = command_parts[1].strip()
     password = command_parts[2].strip()
 
     if not uid.isdigit():
-        await message.answer("❌ UID faqat raqamlardan iborat bo'lishi kerak!")
+        await message.answer(t("uid_invalid", lang))
         return
 
-    waiting_msg = await message.answer("🔑 JWT Token olinmoqda...")
+    waiting_msg = await message.answer(t("loading_token", lang))
 
-    jwt_url = f"https://solanki-info-free-fire-player-statu.vercel.app/token?uid={uid}&password={password}"
+    jwt_url = f"{FF_API_BASE}/token?uid={uid}&password={password}"
     data = await fetch_json(session, jwt_url)
 
     if not data or not isinstance(data, dict):
-        await waiting_msg.edit_text("❌ Token olib bo'lmadi! UID yoki parol xato.")
+        await waiting_msg.edit_text(t("token_failed", lang))
         return
 
-    account_id = data.get("accountId", uid)
-    agora_env = data.get("agoraEnvironment", "Noma'lum")
-    ip_region = data.get("ipRegion", "Noma'lum")
-    lock_region = data.get("lockRegion", "Noma'lum")
-    noti_region = data.get("notiRegion", "Noma'lum")
-    server_url = data.get("serverUrl", "Noma'lum")
-    openid = data.get("openid", "Noma'lum")
-    access_token = data.get("access_token", "Noma'lum")
-    token = data.get("token", "Noma'lum")
-    ttl = data.get("ttl", "Noma'lum")
-
-    result_text = f"""┌ 🔑 **JWT Token Ma'lumotlari (JWT Information)**
-├─ 🆔 Akkaunt ID: `{account_id}`
-├─ 🌐 IP Region: `{ip_region}`
-├─ 🔒 Qulflangan Region: `{lock_region}`
-├─ 🔔 Bildirishnoma Region: `{noti_region}`
-├─ 🎮 Agora Muhiti: `{agora_env}`
-├─ 🖥️ Server Havolasi: `{server_url}`
-├─ 🗝️ OpenID: `{openid}`
-├─ ⏱️ Amal qilish vaqti (TTL): `{ttl}`
-├─ 🎫 Access Token: `{access_token}`
-└─ 🔐 Token (JWT): `{token}`"""
-
+    result_text = build_token_text(data, lang)
     await waiting_msg.edit_text(result_text, parse_mode="Markdown")
+
+# ==========================================
+# 🔎 INLINE REJIM (@FreeFire2026Chat ...)
+# ==========================================
+# Ishlashi uchun @BotFather'da botingizga inline rejimni yoqishni unutmang:
+#   BotFather -> /mybots -> botingiz -> Bot Settings -> Inline Mode -> Turn on
+#
+# Muhim eslatma: Telegram bitta inline natija = bitta xabar. Shu sabab
+# /info kabi juda uzun matnli buyruqlar rasm bilan birga BITTA xabarda
+# bo'la olmaydi (rasm caption'i 1024 belgigacha, /info matni esa undan
+# ancha uzun). Shu sababli:
+#   - info/bancheck/region/token/help -> to'liq matn natija sifatida yuboriladi
+#   - banner -> foydalanuvchi natijani tanlagach (chosen_inline_result),
+#     xabar avtomatik ravishda birlashtirilgan banner+outfit RASMIGA
+#     almashtiriladi.
+
+def _inline_command_articles(lang: str):
+    """Bo'sh so'rov uchun (yoki noma'lum buyruq uchun) ko'rsatiladigan
+    tayyor buyruqlar ro'yxati."""
+    items = [
+        ("help", t("inline_help_title", lang), t("inline_help_desc", lang)),
+        ("info", t("inline_info_title", lang), t("inline_info_desc", lang)),
+        ("bancheck", t("inline_bancheck_title", lang), t("inline_bancheck_desc", lang)),
+        ("banner", t("inline_banner_title", lang), t("inline_banner_desc", lang)),
+        ("region", t("inline_region_title", lang), t("inline_region_desc", lang)),
+        ("token", t("inline_token_title", lang), t("inline_token_desc", lang)),
+    ]
+    results = []
+    for key, title, desc in items:
+        if key == "help":
+            content = InputTextMessageContent(message_text=t("start_help", lang), parse_mode="Markdown")
+        else:
+            # Buyruq nomigina qo'yiladi - foydalanuvchi UID qo'shib davom ettiradi
+            content = InputTextMessageContent(message_text=f"/{key} ")
+        results.append(
+            InlineQueryResultArticle(
+                id=f"cmd_{key}",
+                title=title,
+                description=desc,
+                input_message_content=content,
+            )
+        )
+    return results
+
+def _error_article(result_id: str, title: str, description: str, text: str):
+    return InlineQueryResultArticle(
+        id=result_id,
+        title=title,
+        description=description,
+        input_message_content=InputTextMessageContent(message_text=text),
+    )
+
+@dp.inline_query()
+async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.ClientSession):
+    user_id = inline_query.from_user.id
+    lang = await get_user_lang(user_id, "private")
+    query_text = (inline_query.query or "").strip()
+
+    # Owner bo'lmasa majburiy obunani inline rejimda ham tekshiramiz
+    if user_id != OWNER_ID:
+        not_subbed = await check_user_subscription(user_id, session)
+        if not_subbed:
+            await inline_query.answer(
+                [],
+                cache_time=5,
+                is_personal=True,
+                switch_pm_text=t("need_sub_inline", lang),
+                switch_pm_parameter="sub",
+            )
+            return
+
+    if not query_text:
+        await inline_query.answer(_inline_command_articles(lang), cache_time=30, is_personal=True)
+        return
+
+    cmd = extract_command(query_text)
+    parts = query_text.split(maxsplit=2)
+
+    if cmd not in ("info", "bancheck", "banner", "region", "token", "help"):
+        # Noma'lum matn - tayyor buyruqlarni tavsiya qilamiz
+        await inline_query.answer(_inline_command_articles(lang), cache_time=10, is_personal=True)
+        return
+
+    if cmd == "help":
+        await inline_query.answer(
+            [InlineQueryResultArticle(
+                id="cmd_help",
+                title=t("inline_help_title", lang),
+                description=t("inline_help_desc", lang),
+                input_message_content=InputTextMessageContent(message_text=t("start_help", lang), parse_mode="Markdown"),
+            )],
+            cache_time=30, is_personal=True,
+        )
+        return
+
+    if cmd == "token":
+        if len(parts) < 3:
+            await inline_query.answer(
+                [_error_article("token_missing", t("inline_token_title", lang), t("inline_token_missing_desc", lang), t("token_missing", lang))],
+                cache_time=5, is_personal=True,
+            )
+            return
+        uid, password = parts[1].strip(), parts[2].strip()
+        if not uid.isdigit():
+            await inline_query.answer(
+                [_error_article("token_invalid", t("inline_uid_invalid_title", lang), t("inline_uid_invalid_desc", lang), t("uid_invalid", lang))],
+                cache_time=5, is_personal=True,
+            )
+            return
+        jwt_url = f"{FF_API_BASE}/token?uid={uid}&password={password}"
+        data = await fetch_json(session, jwt_url)
+        if not data or not isinstance(data, dict):
+            await inline_query.answer(
+                [_error_article("token_failed", t("inline_not_found_title", lang), t("inline_not_found_desc", lang), t("token_failed", lang))],
+                cache_time=5, is_personal=True,
+            )
+            return
+        result_text = build_token_text(data, lang)
+        await inline_query.answer(
+            [InlineQueryResultArticle(
+                id=f"token:{uid}",
+                title=f"🔑 UID {uid}",
+                description=t("inline_token_title", lang),
+                input_message_content=InputTextMessageContent(message_text=result_text, parse_mode="Markdown"),
+            )],
+            cache_time=5, is_personal=True,
+        )
+        return
+
+    # info / bancheck / region / banner -> faqat UID kerak
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        title_key = f"inline_{cmd}_title"
+        desc_key = f"inline_{cmd}_desc"
+        await inline_query.answer(
+            [_error_article(f"{cmd}_invalid", t(title_key, lang), t(desc_key, lang), t("uid_invalid", lang))],
+            cache_time=5, is_personal=True,
+        )
+        return
+
+    uid = parts[1].strip()
+
+    if cmd == "banner":
+        # Bu buyruq faqat rasm bilan javob beradi - shuning uchun avval
+        # "yuklanmoqda" matnini ko'rsatamiz, tanlanganda chosen_inline_result
+        # rasmga almashtiradi.
+        await inline_query.answer(
+            [InlineQueryResultArticle(
+                id=f"banner:{uid}",
+                title=f"🖼 UID {uid}",
+                description=t("inline_loading_desc", lang),
+                input_message_content=InputTextMessageContent(message_text=t("inline_loading_title", lang)),
+            )],
+            cache_time=0, is_personal=True,
+        )
+        return
+
+    info_url = f"{FF_API_BASE}/player-info?uid={uid}"
+    data = await fetch_json(session, info_url)
+
+    if not data:
+        await inline_query.answer(
+            [_error_article(f"{cmd}_notfound", t("inline_not_found_title", lang), t("inline_not_found_desc", lang), t("not_found", lang))],
+            cache_time=5, is_personal=True,
+        )
+        return
+
+    if cmd == "info":
+        result_text = build_info_text(data, lang)
+    elif cmd == "bancheck":
+        result_text = build_bancheck_text(data, lang)
+    else:  # region
+        result_text = build_region_text(data, lang)
+
+    await inline_query.answer(
+        [InlineQueryResultArticle(
+            id=f"{cmd}:{uid}",
+            title=f"{t(f'inline_{cmd}_title', lang)} — {uid}",
+            description=data.get("AccountInfo", {}).get("nickname", uid),
+            input_message_content=InputTextMessageContent(message_text=result_text, parse_mode="Markdown"),
+        )],
+        cache_time=5, is_personal=True,
+    )
+
+@dp.chosen_inline_result()
+async def chosen_inline_result_handler(chosen: ChosenInlineResult, session: aiohttp.ClientSession):
+    """Foydalanuvchi inline natijani tanlagach ishga tushadi. Faqat 'banner:<uid>'
+    natijalari uchun matnni haqiqiy rasmga almashtiramiz."""
+    if not chosen.inline_message_id:
+        return
+
+    result_id = chosen.result_id or ""
+    if ":" not in result_id:
+        return
+    cmd, uid = result_id.split(":", 1)
+    if cmd != "banner" or not uid.isdigit():
+        return
+
+    lang = await get_user_lang(chosen.from_user.id, "private")
+
+    banner_url = f"{FF_API_BASE}/avatar-banner?uid={uid}"
+    outfit_url = f"{FF_API_BASE}/player-live-outfits?uid={uid}"
+    banner_bytes, outfit_bytes = await asyncio.gather(
+        fetch_bytes(session, banner_url),
+        fetch_bytes(session, outfit_url),
+    )
+
+    if not banner_bytes and not outfit_bytes:
+        try:
+            await bot.edit_message_text(
+                inline_message_id=chosen.inline_message_id,
+                text=t("photos_failed", lang),
+            )
+        except Exception as e:
+            logging.warning(f"Inline banner matn yangilashda xato: {e}")
+        return
+
+    if banner_bytes and outfit_bytes:
+        final_bytes = await combine_banner_and_outfit_async(banner_bytes, outfit_bytes)
+        caption = t("banner_caption_combined", lang)
+    elif banner_bytes:
+        final_bytes = banner_bytes
+        caption = t("banner_caption1", lang)
+    else:
+        final_bytes = outfit_bytes
+        caption = t("banner_caption2", lang)
+
+    photo_file = BufferedInputFile(final_bytes, filename="banner.jpg")
+
+    try:
+        await bot.edit_message_media(
+            inline_message_id=chosen.inline_message_id,
+            media=InputMediaPhoto(media=photo_file, caption=caption, parse_mode="Markdown"),
+        )
+    except Exception as e:
+        # Ba'zi mijoz-versiyalarda inline xabarga yangi fayl yuklash cheklangan
+        # bo'lishi mumkin - bu holda hech bo'lmasa xabar matnini yangilaymiz.
+        logging.warning(f"Inline rasm biriktirishda xato: {e}")
+        try:
+            await bot.edit_message_text(
+                inline_message_id=chosen.inline_message_id,
+                text=t("photos_failed", lang),
+            )
+        except Exception:
+            pass
 
 # ==========================================
 # 🌐 RENDER UCHUN KEEP-ALIVE (WEB SERVER + SELF-PING)
@@ -1010,6 +1728,15 @@ async def self_ping_loop(session: aiohttp.ClientSession):
 # --- MAIN RUNNER ---
 
 async def main():
+    global BOT_USERNAME
+    try:
+        me = await bot.get_me()
+        if me.username:
+            BOT_USERNAME = me.username
+            logging.info(f"Bot @{BOT_USERNAME} nomi bilan ishga tushdi.")
+    except Exception as e:
+        logging.warning(f"get_me() xatosi: {e}")
+
     # TCPConnector: ulanishlarni qayta ishlatadi (keep-alive) va DNS'ni
     # keshlaydi — bu tashqi Free Fire API'ga so'rovlarni sezilarli tezlashtiradi,
     # ayniqsa bir vaqtda bir nechta foydalanuvchi buyruq yuborganda.
