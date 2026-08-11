@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 import io
-from datetime import datetime, date
+from datetime import datetime
 from PIL import Image
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.filters import Command, BaseFilter
@@ -27,22 +27,29 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Bot @username'i - inline deep-link va h.k. uchun kerak. main() ichida
+# bot.get_me() orqali avtomatik to'ldiriladi, shu bilan birga qo'lda ham
+# o'zgartirishingiz mumkin.
 BOT_USERNAME = "FreeFire2026Chat"
 
 # ==========================================
 # 🗄️ SUPABASE ULANISHI
 # ==========================================
-# users jadvali: id (auto), chat_id (unique), lang
-# majburiy jadvali: id (auto), channel_id (unique), title, username
-# like_usage jadvali: user_id, usage_date, count  -> /like kunlik limiti uchun
-# settings jadvali: key (unique), value           -> /likelimit qiymati uchun
+# users jadvali: id (auto), chat_id (unique bo'lishi SHART - upsert shuning uchun ishlaydi), lang
+# majburiy jadvali: id (auto), channel_id (unique bo'lishi SHART), title, username
+# like_usage jadvali (YANGI - /like kunlik limiti uchun): user_id, usage_date, count
+# settings jadvali (YANGI - /likelimit qiymatini saqlash uchun): key (unique), value
 #
-# Supabase SQL Editor'da bir marta bajarilishi kerak bo'lgan buyruqlar:
+# DIQQAT: Supabase'da SQL Editor orqali QUYIDAGI HAMMASINI bir marta bajaring,
+# aks holda til tanlash va /like buyruqlari to'g'ri ishlamaydi:
 #
 #   ALTER TABLE users ADD CONSTRAINT users_chat_id_key UNIQUE (chat_id);
 #   ALTER TABLE majburiy ADD CONSTRAINT majburiy_channel_id_key UNIQUE (channel_id);
+#
+#   -- Til (uz/en) shu yerda, "users" jadvalining o'zida saqlanadi:
 #   ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT DEFAULT 'uz';
 #
+#   -- /like buyrug'i uchun kunlik limit hisoblagichi:
 #   CREATE TABLE IF NOT EXISTS like_usage (
 #       id BIGSERIAL PRIMARY KEY,
 #       user_id BIGINT NOT NULL,
@@ -51,6 +58,7 @@ BOT_USERNAME = "FreeFire2026Chat"
 #       UNIQUE (user_id, usage_date)
 #   );
 #
+#   -- /likelimit orqali o'rnatiladigan kunlik limit qiymati:
 #   CREATE TABLE IF NOT EXISTS settings (
 #       id BIGSERIAL PRIMARY KEY,
 #       key TEXT NOT NULL UNIQUE,
@@ -62,12 +70,14 @@ SUPABASE_KEY = "sb_publishable_CG7mnSkSh-qxriZQgh5RdQ_-ds70rCP"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- RENDER UCHUN KEEP-ALIVE SOZLAMALARI ---
 SELF_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
 # ==========================================
 # 🧩 "/" SIZ HAM, "/" BILAN HAM ISHLAYDIGAN KOMANDA FILTRI
 # ==========================================
 
+# Botning barcha tan oladigan komandalari (slashsiz, kichik harflarda)
 KNOWN_COMMANDS = {
     "start", "help", "info", "bancheck", "banner",
     "region", "token", "rek", "majburiy", "remover", "royxat", "setlang",
@@ -75,6 +85,8 @@ KNOWN_COMMANDS = {
 }
 
 def extract_command(text: str):
+    """Xabar matnidan komanda nomini ajratib oladi (masalan '/info 123'
+    ham, 'info 123' ham 'info' qaytaradi). Komanda topilmasa None qaytadi."""
     if not text:
         return None
     match = re.match(r'^/?([A-Za-z_]+)(?:@\w+)?(?:\s|$)', text.strip())
@@ -83,6 +95,10 @@ def extract_command(text: str):
     return match.group(1).lower()
 
 class Cmd(BaseFilter):
+    """Command() filtriga o'xshaydi, lekin '/' bo'lmasa ham ishlaydi.
+    Masalan Cmd('info') 'info 8530477563' va '/info 8530477563' ikkalasiga
+    ham mos keladi."""
+
     def __init__(self, *commands: str):
         self.commands = {c.lower() for c in commands}
 
@@ -93,6 +109,9 @@ class Cmd(BaseFilter):
 # ==========================================
 # 🌐 KO'P TILLI TIZIM (uz / en)
 # ==========================================
+# Til matnlari shu yerda saqlanadi. Yangi til qo'shish uchun TR ga yangi
+# kalit (masalan "ru") qo'shib, quyidagi barcha kalitlarni tarjima qilish
+# kifoya - qolgan kod avtomatik ishlay boshlaydi.
 
 DEFAULT_LANG = "uz"
 SUPPORTED_LANGS = ("uz", "en")
@@ -208,8 +227,6 @@ TR = {
         "inline_loading_title": "⏳ Yuklanmoqda...",
         "inline_loading_desc": "Tanlansangiz rasm biriktiriladi",
         "inline_token_missing_desc": "token <uid> <parol> shaklida yozing",
-        "inline_tap_title": "👉 Bosing — natija shu yerda ko'rinadi",
-        "inline_tap_desc": "Tanlansangiz ma'lumot shu xabarga yuklanadi",
         "info_template": (
             "🎮 **FREE FIRE PLAYER INFO**\n\n"
             "┌ 👤 **Asosiy Ma'lumotlar**\n"
@@ -397,8 +414,6 @@ TR = {
         "inline_loading_title": "⏳ Loading...",
         "inline_loading_desc": "Image will be attached once selected",
         "inline_token_missing_desc": "Type it as: token <uid> <password>",
-        "inline_tap_title": "👉 Tap — the result will appear here",
-        "inline_tap_desc": "Once selected, the data will load into this message",
         "info_template": (
             "🎮 **FREE FIRE PLAYER INFO**\n\n"
             "┌ 👤 **Main Info**\n"
@@ -532,6 +547,9 @@ TR = {
 }
 
 def t(key: str, lang: str, **kwargs) -> str:
+    """Berilgan til uchun matnni oladi. Til yoki kalit topilmasa 'en' ga,
+    keyin xom kalit nomiga tushadi - shu bilan bot hech qachon xatolik
+    bermay, faqat tarjima yetishmasa inglizcha ko'rsatadi."""
     lang = lang if lang in TR else DEFAULT_LANG
     template = TR.get(lang, {}).get(key)
     if template is None:
@@ -541,9 +559,13 @@ def t(key: str, lang: str, **kwargs) -> str:
     except (KeyError, IndexError):
         return template
 
-# --- FOYDALANUVCHI TILI: SAQLASH VA O'QISH ---
+# --- FOYDALANUVCHI TILI: SAQLASH VA O'QISH (Supabase: "users" jadvalining "lang" ustuni) ---
+# DIQQAT: bu foydalanuvchining shaxsiy tanlovi bo'lgani uchun "chat_id" o'rniga
+# har doim foydalanuvchining haqiqiy Telegram user_id'si bilan yoziladi/o'qiladi
+# (guruh chat_id'lari manfiy son bo'lgani uchun bu bilan hech qanday
+# to'qnashuv bo'lmaydi).
 
-_LANG_CACHE: dict[int, str] = {}
+_LANG_CACHE: dict[int, str] = {}  # user_id -> lang (jarayon xotirasida keshlash)
 
 def _get_user_lang_sync(user_id: int):
     try:
@@ -551,7 +573,7 @@ def _get_user_lang_sync(user_id: int):
         if resp.data:
             return resp.data[0].get("lang")
     except Exception as e:
-        logging.error(f"Til o'qish xatosi ({user_id}): {e}")
+        logging.error(f"Til o'qish xatosi ({user_id}): {e} — 'users' jadvalida 'lang' ustuni borligini tekshiring (ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT DEFAULT 'uz';)")
     return None
 
 def _set_user_lang_sync(user_id: int, lang: str) -> bool:
@@ -561,10 +583,17 @@ def _set_user_lang_sync(user_id: int, lang: str) -> bool:
         ).execute()
         return True
     except Exception as e:
-        logging.error(f"Til yozish xatosi ({user_id}): {e}")
+        logging.error(f"Til yozish xatosi ({user_id}): {e} — 'users' jadvalida 'lang' ustuni borligini tekshiring (ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT DEFAULT 'uz';)")
         return False
 
 async def get_user_lang(user_id: int, chat_type: str = "private") -> str:
+    """Foydalanuvchining tanlagan tilini qaytaradi.
+
+    - Agar foydalanuvchi /setlang orqali tanlagan bo'lsa (chat turidan
+      qat'iy nazar, guruhda ham) o'sha til qaytadi.
+    - Agar hali tanlamagan bo'lsa: guruh/kanalda standart INGLIZCHA,
+      shaxsiy chatda standart O'ZBEKCHA qaytadi (talab shunday edi).
+    """
     if user_id in _LANG_CACHE:
         return _LANG_CACHE[user_id]
 
@@ -573,20 +602,29 @@ async def get_user_lang(user_id: int, chat_type: str = "private") -> str:
         _LANG_CACHE[user_id] = lang
         return lang
 
+    # Bazada yozuv yo'q - foydalanuvchi hali tilni tanlamagan
     return "en" if chat_type != "private" else DEFAULT_LANG
 
 async def set_user_lang(user_id: int, lang: str) -> bool:
     if lang not in SUPPORTED_LANGS:
         return False
+    # Keshni DARHOL yangilaymiz - shunda til shu zahotiyoq almashadi, hatto
+    # Supabase'ga yozish biror sababga ko'ra muvaffaqiyatsiz tugasa ham
+    # (masalan jadvalda "lang" ustuni hali qo'shilmagan bo'lsa) foydalanuvchi
+    # buni joriy sessiyada darrov his qiladi, keyin loglardan sababni topib
+    # tuzatish mumkin bo'ladi.
     _LANG_CACHE[user_id] = lang
     ok = await asyncio.to_thread(_set_user_lang_sync, user_id, lang)
     if not ok:
-        logging.warning(f"Til Supabase'ga saqlanmadi (user_id={user_id})")
+        logging.warning(f"Til Supabase'ga saqlanmadi (user_id={user_id}) - bot qayta ishga tushsa til yana standart holatga qaytadi.")
     return ok
 
 # ==========================================
-# 💾 FOYDALANUVCHILAR BAZASI
+# 💾 FOYDALANUVCHILAR BAZASI (Supabase: "users" jadvali)
 # ==========================================
+# Bu bazadan faqat /rek (reklama) buyrug'i uchun barcha chat ID'lar olinadi.
+# supabase-py sinxron kutubxona bo'lgani uchun asyncio.to_thread() bilan
+# alohida threadda ishga tushiramiz — shunda bot event loop bloklanmaydi.
 
 def _db_add_id_sync(chat_id: int) -> bool:
     try:
@@ -615,16 +653,19 @@ def _db_remove_id_sync(chat_id) -> bool:
         return False
 
 async def db_add_id(session: aiohttp.ClientSession, chat_id: int):
+    """Yangi chat (user, guruh, kanal) ID'sini Supabase'ga qo'shadi"""
     return await asyncio.to_thread(_db_add_id_sync, chat_id)
 
 async def db_get_ids(session: aiohttp.ClientSession):
+    """Bazadagi barcha ID'lar ro'yxatini oladi"""
     return await asyncio.to_thread(_db_get_ids_sync)
 
 async def db_remove_id(session: aiohttp.ClientSession, chat_id):
+    """Inaktiv yoki bloklangan ID'ni bazadan o'chiradi"""
     return await asyncio.to_thread(_db_remove_id_sync, chat_id)
 
 # ==========================================
-# 🔔 MAJBURIY A'ZOLIK BAZASI
+# 🔔 MAJBURIY A'ZOLIK BAZASI (Supabase: "majburiy" jadvali)
 # ==========================================
 
 def _majburiy_add_id_sync(chat_id, title="", username="") -> bool:
@@ -655,89 +696,16 @@ def _majburiy_remove_id_sync(chat_id) -> bool:
         return False
 
 async def majburiy_add_id(session: aiohttp.ClientSession, chat_id, title="", username=""):
+    """Majburiy azolik kanal/guruh ID'sini Supabase'ga qo'shadi"""
     return await asyncio.to_thread(_majburiy_add_id_sync, chat_id, title, username)
 
 async def majburiy_get_ids(session: aiohttp.ClientSession):
+    """Majburiy azolik uchun barcha kanal/guruh ID'larini oladi"""
     return await asyncio.to_thread(_majburiy_get_ids_sync)
 
 async def majburiy_remove_id(session: aiohttp.ClientSession, chat_id):
+    """Majburiy azolik ro'yxatidan ID'ni o'chiradi"""
     return await asyncio.to_thread(_majburiy_remove_id_sync, chat_id)
-
-# ==========================================
-# ❤️ /like KUNLIK LIMIT VA SOZLAMALAR (Supabase: like_usage, settings)
-# ==========================================
-
-DEFAULT_LIKE_LIMIT = 1
-
-def _get_like_limit_sync() -> int:
-    try:
-        resp = supabase.table("settings").select("value").eq("key", "like_daily_limit").limit(1).execute()
-        if resp.data:
-            return int(resp.data[0].get("value") or DEFAULT_LIKE_LIMIT)
-    except Exception as e:
-        logging.error(f"Like limit o'qish xatosi: {e}")
-    return DEFAULT_LIKE_LIMIT
-
-def _set_like_limit_sync(limit: int) -> bool:
-    try:
-        supabase.table("settings").upsert(
-            {"key": "like_daily_limit", "value": str(limit)}, on_conflict="key"
-        ).execute()
-        return True
-    except Exception as e:
-        logging.error(f"Like limit yozish xatosi: {e}")
-        return False
-
-def _get_like_usage_sync(user_id: int) -> int:
-    today = date.today().isoformat()
-    try:
-        resp = (
-            supabase.table("like_usage")
-            .select("count")
-            .eq("user_id", user_id)
-            .eq("usage_date", today)
-            .limit(1)
-            .execute()
-        )
-        if resp.data:
-            return int(resp.data[0].get("count") or 0)
-    except Exception as e:
-        logging.error(f"Like usage o'qish xatosi ({user_id}): {e}")
-    return 0
-
-def _increment_like_usage_sync(user_id: int) -> int:
-    today = date.today().isoformat()
-    try:
-        resp = (
-            supabase.table("like_usage")
-            .select("count")
-            .eq("user_id", user_id)
-            .eq("usage_date", today)
-            .limit(1)
-            .execute()
-        )
-        current = int(resp.data[0]["count"]) if resp.data else 0
-        new_count = current + 1
-        supabase.table("like_usage").upsert(
-            {"user_id": user_id, "usage_date": today, "count": new_count},
-            on_conflict="user_id,usage_date",
-        ).execute()
-        return new_count
-    except Exception as e:
-        logging.error(f"Like usage yozish xatosi ({user_id}): {e}")
-        return 0
-
-async def get_like_limit() -> int:
-    return await asyncio.to_thread(_get_like_limit_sync)
-
-async def set_like_limit(limit: int) -> bool:
-    return await asyncio.to_thread(_set_like_limit_sync, limit)
-
-async def get_like_usage(user_id: int) -> int:
-    return await asyncio.to_thread(_get_like_usage_sync, user_id)
-
-async def increment_like_usage(user_id: int) -> int:
-    return await asyncio.to_thread(_increment_like_usage_sync, user_id)
 
 # --- BAZAGA AVTOMATIK QO'SHISH MIDDLEWARE ---
 
@@ -745,6 +713,7 @@ class AutoRegisterMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, types.Message) and event.chat:
             chat_id = event.chat.id
+            # Har qanday xabar kelganda chat ID sini fonda bazaga yozamiz
             asyncio.create_task(db_add_id(data["session"], chat_id))
         return await handler(event, data)
 
@@ -752,9 +721,11 @@ class AutoRegisterMiddleware(BaseMiddleware):
 # 🔒 MAJBURIY OBUNA TEKSHIRUVI (FORCE SUBSCRIBE)
 # ==========================================
 
+# Bu buyruqlarni majburiy obuna tekshiruvidan chetlab o'tkazamiz (slashsiz nomlar)
 EXEMPT_COMMANDS = ("start", "help", "setlang")
 
 async def check_user_subscription(user_id: int, session: aiohttp.ClientSession):
+    """Foydalanuvchi hali obuna bo'lmagan kanal/guruh ID'lari ro'yxatini qaytaradi"""
     channel_ids = await majburiy_get_ids(session)
 
     async def _check(cid):
@@ -763,14 +734,17 @@ async def check_user_subscription(user_id: int, session: aiohttp.ClientSession):
             if member.status in ("left", "kicked"):
                 return cid
         except Exception:
+            # Bot kanalga admin sifatida qo'shilmagan yoki kanal topilmasa ham xatolik chiqmasin
             return cid
         return None
 
+    # Barcha kanallarni PARALLEL tekshiramiz (ketma-ket emas) - tezroq javob uchun
     results = await asyncio.gather(*[_check(cid) for cid in channel_ids])
     not_subscribed = [cid for cid in results if cid is not None]
     return not_subscribed
 
 async def build_subscription_keyboard(not_subbed_ids, lang: str = DEFAULT_LANG):
+    """Obuna bo'linmagan kanallar uchun tugmalar ro'yxatini yasaydi"""
     rows = []
     idx = 1
     for cid in not_subbed_ids:
@@ -804,14 +778,17 @@ async def send_subscription_prompt(message: types.Message, not_subbed_ids, lang:
 class ForceSubscribeMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, types.Message) and event.from_user and event.text:
+            # Bot egasi tekshiruvdan ozod
             if event.from_user.id == OWNER_ID:
                 return await handler(event, data)
 
             cmd = extract_command(event.text)
 
+            # /start, /help, /setlang kabi ozod buyruqlar
             if cmd in EXEMPT_COMMANDS:
                 return await handler(event, data)
 
+            # Faqat bot tan oladigan buyruqlarni tekshiramiz (slash bilan yoki slashsiz)
             if cmd in KNOWN_COMMANDS:
                 session = data.get("session")
                 not_subbed = await check_user_subscription(event.from_user.id, session)
@@ -875,8 +852,10 @@ async def setlang_callback_handler(callback: types.CallbackQuery):
 # ==========================================
 # 🔔 MAJBURIY A'ZOLIK BOSHQARUV BUYRUQLARI (FAQAT OWNER, FAQAT LICHKA)
 # ==========================================
+# Bu buyruqlar faqat bot egasi uchun bo'lgani sababli o'zbekcha qoldirildi.
 
 async def resolve_chat_id(username_or_id: str):
+    """@username yoki id orqali chat obyektini topadi"""
     try:
         chat = await bot.get_chat(username_or_id)
         return chat
@@ -1004,12 +983,16 @@ def clean_text(text):
     return text.strip()
 
 def format_unix_date(timestamp):
+    """Unix timestamp (soniyalarda) qabul qilib, uni 'kun.oy.yil' (masalan
+    01.01.2026) formatidagi sana matniga aylantiradi. Agar qiymat bo'lmasa
+    yoki noto'g'ri formatda bo'lsa, "Noma'lum" qaytaradi."""
     if timestamp in (None, "", 0, "0"):
         return None
     try:
         ts = int(float(timestamp))
         if ts <= 0:
             return None
+        # Ba'zi API'lar millisekundda qaytarishi mumkin, shuni tekshiramiz
         if ts > 10_000_000_000:
             ts //= 1000
         dt = datetime.utcfromtimestamp(ts)
@@ -1018,6 +1001,9 @@ def format_unix_date(timestamp):
         return None
 
 def translate_uzbek_datetime(text):
+    """DIQQAT: bu funksiya nomi tarixiy sabablarga ko'ra saqlanib qolgan -
+    faqat "uz" tili uchun ishlatiladi (inglizcha xom matnni o'zbekchaga
+    o'giradi). Inglizcha rejimda xom matn o'zgarishsiz qoldiriladi."""
     if not text or not isinstance(text, str):
         return None
 
@@ -1044,6 +1030,9 @@ def translate_uzbek_datetime(text):
     return res.strip()
 
 def localize_raw_datetime(text, lang: str):
+    """Xom (API'dan kelgan, odatda inglizcha) sana/vaqt matnini tanlangan
+    tilga moslaydi. uz -> so'zma-so'z o'zbekchaga o'giradi, en -> o'zgarishsiz
+    qoldiradi. Bo'sh bo'lsa tarjima qilingan "unknown" qaytaradi."""
     if lang == "uz":
         result = translate_uzbek_datetime(text)
     else:
@@ -1102,6 +1091,8 @@ def translate_booyah_pass(bp_str, lang: str):
     return bp_str or t("unknown", lang)
 
 def combine_banner_and_outfit(banner_bytes, outfit_bytes):
+    """CPU-bog'liq (PIL) amal — event loopni bloklamasligi uchun bu funksiya
+    doim asyncio.to_thread() orqali chaqiriladi (pastga qarang)."""
     try:
         banner_img = Image.open(io.BytesIO(banner_bytes)).convert("RGB")
         outfit_img = Image.open(io.BytesIO(outfit_bytes)).convert("RGB")
@@ -1126,13 +1117,17 @@ def combine_banner_and_outfit(banner_bytes, outfit_bytes):
         return banner_bytes or outfit_bytes
 
 async def combine_banner_and_outfit_async(banner_bytes, outfit_bytes):
+    """combine_banner_and_outfit'ni alohida threadda ishga tushiradi, shunda
+    rasm qayta ishlanayotganda bot boshqa foydalanuvchilarga javob berishda
+    to'xtab qolmaydi."""
     return await asyncio.to_thread(combine_banner_and_outfit, banner_bytes, outfit_bytes)
 
 # --- API SO'ROVLARI ---
 
 FF_API_BASE = "https://solanki-info-free-fire-player-statu.vercel.app"
-LIKE_API_BASE = "https://ff-like-444.vercel.app"
 
+# Tashqi Free Fire API'ga so'rovlar uchun umumiy timeout — cheksiz kutib
+# qolmaslik uchun (aks holda bitta sekin so'rov butun handlerni ushlab turadi)
 API_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=5)
 
 async def fetch_json(session, url):
@@ -1154,6 +1149,9 @@ async def fetch_bytes(session, url):
     return None
 
 def build_info_text(data: dict, lang: str) -> str:
+    """/info uchun API javobidan to'liq, tarjima qilingan matnni yasaydi.
+    Bu funksiya oddiy komandada ham, inline rejimda ham ishlatiladi -
+    shunda ikkala joyda natija bir xil bo'ladi."""
     acc = data.get("AccountInfo", {})
     prof = data.get("AccountProfileInfo", {})
     guild = data.get("GuildInfo", {})
@@ -1286,66 +1284,17 @@ def build_token_text(data: dict, lang: str) -> str:
         token=data.get("token", unk),
     )
 
-def build_like_text(like_data: dict, level, lang: str) -> str:
-    """/like API javobidan hisobot matnini yasaydi. like_data - LIKE_API_BASE
-    dan qaytgan xom JSON (LikesGivenByAPI, LikesafterCommand, LikesbeforeCommand,
-    PlayerNickname, UID, status). `level` - alohida /player-info dan olingan
-    daraja (like API'sida daraja bo'lmagani uchun)."""
-    unk = t("unknown", lang)
-    status_val = like_data.get("status")
-    success = str(status_val) in ("1", "True", "true")
-
-    nickname = like_data.get("PlayerNickname", unk)
-    uid = like_data.get("UID", unk)
-    likes_before = like_data.get("LikesbeforeCommand", unk)
-    likes_after = like_data.get("LikesafterCommand", unk)
-    likes_given = like_data.get("LikesGivenByAPI", 0)
-    status_text = t("like_status_success", lang) if success else t("like_status_fail", lang)
-
-    template_key = "like_success_template" if success else "like_fail_template"
-    return t(
-        template_key, lang,
-        nickname=nickname, uid=uid, level=(level if level not in (None, "") else unk),
-        likes_before=likes_before, likes_after=likes_after,
-        likes_given=likes_given, status=status_text,
-    ), success
-
-async def fetch_player_level(session, uid: str, lang: str):
-    """Faqat darajani olish uchun /player-info'ga murojaat qiladi (like API
-    javobida daraja bo'lmagani uchun hisobotda ko'rsatish uchun kerak)."""
-    info_url = f"{FF_API_BASE}/player-info?uid={uid}"
-    data = await fetch_json(session, info_url)
-    if not data:
-        return None
-    return data.get("AccountInfo", {}).get("level")
-
-async def perform_like(session, region: str, uid: str, lang: str):
-    """Info API'dan darajani, keyin LIKE_API_BASE'dan layk natijasini oladi va
-    tayyor hisobot matnini qaytaradi. Qaytadi: (text, success: bool)."""
-    level, like_data = await asyncio.gather(
-        fetch_player_level(session, uid, lang),
-        fetch_json(session, f"{LIKE_API_BASE}/like?uid={uid}&server_name={region}"),
-    )
-    if not like_data or not isinstance(like_data, dict):
-        unk = t("unknown", lang)
-        text = t(
-            "like_fail_template", lang,
-            nickname=unk, uid=uid, level=(level if level not in (None, "") else unk),
-            likes_before=unk, likes_after=unk, likes_given=0,
-            status=t("like_status_fail", lang),
-        )
-        return text, False
-    return build_like_text(like_data, level, lang)
-
 # ==========================================
 # 📢 REKLAMA YUBORISH KOMANDASI (rek)
 # ==========================================
 
 @dp.message(Cmd("rek"))
 async def rek_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    # Faqat Owner ishlata oladi
     if message.from_user.id != OWNER_ID:
         return
 
+    # Postga reply qilinganini tekshirish
     if not message.reply_to_message:
         await message.answer("❌ **Xatolik!** `/rek` buyrug'ini yubormoqchi bo'lgan postingizga **reply** (javob) qilib yozing!")
         return
@@ -1371,6 +1320,7 @@ async def rek_command_handler(message: types.Message, session: aiohttp.ClientSes
         errors_count = 0
         sent = False
 
+        # 5 martagacha qayta urinish taktikasi
         for attempt in range(5):
             try:
                 await bot.copy_message(
@@ -1382,18 +1332,22 @@ async def rek_command_handler(message: types.Message, session: aiohttp.ClientSes
                 sent = True
                 break
             except TelegramRetryAfter as e:
+                # Telegram cheklov qo'ysa kutiladi
                 await asyncio.sleep(e.retry_after)
             except (TelegramForbiddenError, TelegramBadRequest):
+                # Bot bloklangan yoki guruhdan chiqarilgan
                 errors_count = 5
                 break
             except Exception:
                 errors_count += 1
                 await asyncio.sleep(1)
 
+        # Agar 5 marta ketma-ket xato bersa, ID bazadan o'chiriladi
         if not sent and errors_count >= 5:
             failed_count += 1
             await db_remove_id(session, chat_id)
 
+        # Telegram FloodWait oldini olish uchun qisqa tanaffus
         await asyncio.sleep(0.05)
 
     report_text = f"""✅ **Reklama yuborish yakunlandi!**
@@ -1428,6 +1382,10 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
     banner_url = f"{FF_API_BASE}/avatar-banner?uid={uid}"
     outfit_url = f"{FF_API_BASE}/player-live-outfits?uid={uid}"
 
+    # 3 ta so'rov PARALLEL yuboriladi (ketma-ket emas) — bu allaqachon tez,
+    # lekin timeout va connection-pool sozlamalari yo'qligi tufayli sekin
+    # so'rovlar hammasini "kutib" qo'yardi. API_TIMEOUT va pastdagi
+    # connector sozlamalari shu muammoni bartaraf etadi.
     data, banner_bytes, outfit_bytes = await asyncio.gather(
         fetch_json(session, info_url),
         fetch_bytes(session, banner_url),
@@ -1444,6 +1402,7 @@ async def info_command_handler(message: types.Message, session: aiohttp.ClientSe
     sent_msg = await message.answer(result_text, parse_mode="Markdown")
 
     if banner_bytes and outfit_bytes:
+        # Rasm birlashtirish (PIL) endi alohida threadda ishlaydi
         final_image = await combine_banner_and_outfit_async(banner_bytes, outfit_bytes)
         photo_file = BufferedInputFile(final_image, filename="player_info.jpg")
         await message.answer_photo(
@@ -1575,77 +1534,24 @@ async def token_command_handler(message: types.Message, session: aiohttp.ClientS
     result_text = build_token_text(data, lang)
     await waiting_msg.edit_text(result_text, parse_mode="Markdown")
 
-@dp.message(Cmd("like"))
-async def like_command_handler(message: types.Message, session: aiohttp.ClientSession):
-    lang = await get_user_lang(message.from_user.id, message.chat.type)
-    command_parts = message.text.split(maxsplit=2)
-    if len(command_parts) < 3:
-        await message.answer(t("like_usage_msg", lang), parse_mode="Markdown")
-        return
-
-    region = command_parts[1].strip()
-    uid = command_parts[2].strip()
-
-    if not region.isalpha():
-        await message.answer(t("like_region_invalid", lang))
-        return
-    if not uid.isdigit():
-        await message.answer(t("uid_invalid", lang))
-        return
-
-    limit = await get_like_limit()
-    used = await get_like_usage(message.from_user.id)
-    if used >= limit:
-        await message.answer(t("like_limit_reached", lang, limit=limit))
-        return
-
-    waiting_msg = await message.answer(t("like_loading", lang))
-
-    result_text, success = await perform_like(session, region.upper(), uid, lang)
-
-    if success:
-        await increment_like_usage(message.from_user.id)
-
-    await waiting_msg.edit_text(result_text, parse_mode="Markdown")
-
-@dp.message(Cmd("likelimit"))
-async def likelimit_command_handler(message: types.Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    lang = await get_user_lang(message.from_user.id, message.chat.type)
-    command_parts = message.text.split(maxsplit=1)
-    if len(command_parts) < 2 or not command_parts[1].strip().isdigit():
-        await message.answer(t("likelimit_usage", lang), parse_mode="Markdown")
-        return
-
-    limit = int(command_parts[1].strip())
-    if limit <= 0:
-        await message.answer(t("likelimit_usage", lang), parse_mode="Markdown")
-        return
-
-    ok = await set_like_limit(limit)
-    if ok:
-        await message.answer(t("likelimit_set", lang, limit=limit), parse_mode="Markdown")
-    else:
-        await message.answer("⚠️ Saqlashda xatolik yuz berdi, qaytadan urinib ko'ring.")
-
 # ==========================================
 # 🔎 INLINE REJIM (@FreeFire2026Chat ...)
 # ==========================================
 # Ishlashi uchun @BotFather'da botingizga inline rejimni yoqishni unutmang:
 #   BotFather -> /mybots -> botingiz -> Bot Settings -> Inline Mode -> Turn on
 #
-# ESLATMA (yangi xatti-harakat): og'ir/sekin API so'rovlari endi inline_query
-# javobi ICHIDA emas, foydalanuvchi natijani TANLAGANDAN keyin
-# (chosen_inline_result) bajariladi. Shu sabab inline ro'yxatda hech qanday
-# "yuklanmoqda" matni ko'rinmaydi - foydalanuvchi darhol "bosing" turidagi
-# natijani ko'radi, so'rov faqat u BOSGANDA (tanlaganda) fonda ishga tushadi
-# va tayyor bo'lgach xabar avtomatik hisobotga almashtiriladi (edit_message_text
-# / edit_message_media orqali). Bu /banner uchun eskidan shunday ishlagan,
-# endi /info, /bancheck, /region, /token, /like uchun ham xuddi shunday.
+# Muhim eslatma: Telegram bitta inline natija = bitta xabar. Shu sabab
+# /info kabi juda uzun matnli buyruqlar rasm bilan birga BITTA xabarda
+# bo'la olmaydi (rasm caption'i 1024 belgigacha, /info matni esa undan
+# ancha uzun). Shu sababli:
+#   - info/bancheck/region/token/help -> to'liq matn natija sifatida yuboriladi
+#   - banner -> foydalanuvchi natijani tanlagach (chosen_inline_result),
+#     xabar avtomatik ravishda birlashtirilgan banner+outfit RASMIGA
+#     almashtiriladi.
 
 def _inline_command_articles(lang: str):
+    """Bo'sh so'rov uchun (yoki noma'lum buyruq uchun) ko'rsatiladigan
+    tayyor buyruqlar ro'yxati."""
     items = [
         ("help", t("inline_help_title", lang), t("inline_help_desc", lang)),
         ("info", t("inline_info_title", lang), t("inline_info_desc", lang)),
@@ -1653,13 +1559,13 @@ def _inline_command_articles(lang: str):
         ("banner", t("inline_banner_title", lang), t("inline_banner_desc", lang)),
         ("region", t("inline_region_title", lang), t("inline_region_desc", lang)),
         ("token", t("inline_token_title", lang), t("inline_token_desc", lang)),
-        ("like", t("inline_like_title", lang), t("inline_like_desc", lang)),
     ]
     results = []
     for key, title, desc in items:
         if key == "help":
             content = InputTextMessageContent(message_text=t("start_help", lang), parse_mode="Markdown")
         else:
+            # Buyruq nomigina qo'yiladi - foydalanuvchi UID qo'shib davom ettiradi
             content = InputTextMessageContent(message_text=f"/{key} ")
         results.append(
             InlineQueryResultArticle(
@@ -1679,23 +1585,13 @@ def _error_article(result_id: str, title: str, description: str, text: str):
         input_message_content=InputTextMessageContent(message_text=text),
     )
 
-def _pending_article(result_id: str, title: str, desc: str, placeholder_text: str):
-    """Og'ir ish (API so'rovi) bajarilmasdan turib DARHOL qaytariladigan
-    natija - foydalanuvchi buni tanlaganda chosen_inline_result orqali
-    haqiqiy hisobotga almashtiriladi."""
-    return InlineQueryResultArticle(
-        id=result_id,
-        title=title,
-        description=desc,
-        input_message_content=InputTextMessageContent(message_text=placeholder_text),
-    )
-
 @dp.inline_query()
 async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.ClientSession):
     user_id = inline_query.from_user.id
     lang = await get_user_lang(user_id, "private")
     query_text = (inline_query.query or "").strip()
 
+    # Owner bo'lmasa majburiy obunani inline rejimda ham tekshiramiz
     if user_id != OWNER_ID:
         not_subbed = await check_user_subscription(user_id, session)
         if not_subbed:
@@ -1715,7 +1611,8 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
     cmd = extract_command(query_text)
     parts = query_text.split(maxsplit=2)
 
-    if cmd not in ("info", "bancheck", "banner", "region", "token", "like", "help"):
+    if cmd not in ("info", "bancheck", "banner", "region", "token", "help"):
+        # Noma'lum matn - tayyor buyruqlarni tavsiya qilamiz
         await inline_query.answer(_inline_command_articles(lang), cache_time=10, is_personal=True)
         return
 
@@ -1745,46 +1642,23 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
                 cache_time=5, is_personal=True,
             )
             return
-        # Og'ir ish (API so'rovi) endi bu yerda emas - chosen_inline_result'da.
+        jwt_url = f"{FF_API_BASE}/token?uid={uid}&password={password}"
+        data = await fetch_json(session, jwt_url)
+        if not data or not isinstance(data, dict):
+            await inline_query.answer(
+                [_error_article("token_failed", t("inline_not_found_title", lang), t("inline_not_found_desc", lang), t("token_failed", lang))],
+                cache_time=5, is_personal=True,
+            )
+            return
+        result_text = build_token_text(data, lang)
         await inline_query.answer(
-            [_pending_article(
-                f"token:{uid}:{password}",
-                f"🔑 UID {uid}",
-                t("inline_tap_desc", lang),
-                t("inline_loading_title", lang),
+            [InlineQueryResultArticle(
+                id=f"token:{uid}",
+                title=f"🔑 UID {uid}",
+                description=t("inline_token_title", lang),
+                input_message_content=InputTextMessageContent(message_text=result_text, parse_mode="Markdown"),
             )],
-            cache_time=0, is_personal=True,
-        )
-        return
-
-    if cmd == "like":
-        if len(parts) < 3:
-            await inline_query.answer(
-                [_error_article("like_missing", t("inline_like_title", lang), t("inline_like_missing_desc", lang), t("like_usage_msg", lang))],
-                cache_time=5, is_personal=True,
-            )
-            return
-        region, uid = parts[1].strip(), parts[2].strip()
-        if not region.isalpha():
-            await inline_query.answer(
-                [_error_article("like_region_invalid", t("inline_like_title", lang), t("inline_like_missing_desc", lang), t("like_region_invalid", lang))],
-                cache_time=5, is_personal=True,
-            )
-            return
-        if not uid.isdigit():
-            await inline_query.answer(
-                [_error_article("like_uid_invalid", t("inline_uid_invalid_title", lang), t("inline_uid_invalid_desc", lang), t("uid_invalid", lang))],
-                cache_time=5, is_personal=True,
-            )
-            return
-        await inline_query.answer(
-            [_pending_article(
-                f"like:{region.upper()}:{uid}",
-                f"❤️ {region.upper()} — {uid}",
-                t("inline_tap_desc", lang),
-                t("inline_loading_title", lang),
-            )],
-            cache_time=0, is_personal=True,
+            cache_time=5, is_personal=True,
         )
         return
 
@@ -1800,172 +1674,109 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
 
     uid = parts[1].strip()
 
-    # info / bancheck / region / banner - hammasi DARHOL "bosing" natijasini
-    # qaytaradi, og'ir ish faqat tanlangandan keyin (chosen_inline_result)
-    # bajariladi.
-    title_key = f"inline_{cmd}_title"
+    if cmd == "banner":
+        # Bu buyruq faqat rasm bilan javob beradi - shuning uchun avval
+        # "yuklanmoqda" matnini ko'rsatamiz, tanlanganda chosen_inline_result
+        # rasmga almashtiradi.
+        await inline_query.answer(
+            [InlineQueryResultArticle(
+                id=f"banner:{uid}",
+                title=f"🖼 UID {uid}",
+                description=t("inline_loading_desc", lang),
+                input_message_content=InputTextMessageContent(message_text=t("inline_loading_title", lang)),
+            )],
+            cache_time=0, is_personal=True,
+        )
+        return
+
+    info_url = f"{FF_API_BASE}/player-info?uid={uid}"
+    data = await fetch_json(session, info_url)
+
+    if not data:
+        await inline_query.answer(
+            [_error_article(f"{cmd}_notfound", t("inline_not_found_title", lang), t("inline_not_found_desc", lang), t("not_found", lang))],
+            cache_time=5, is_personal=True,
+        )
+        return
+
+    if cmd == "info":
+        result_text = build_info_text(data, lang)
+    elif cmd == "bancheck":
+        result_text = build_bancheck_text(data, lang)
+    else:  # region
+        result_text = build_region_text(data, lang)
+
     await inline_query.answer(
-        [_pending_article(
-            f"{cmd}:{uid}",
-            f"{t(title_key, lang)} — {uid}",
-            t("inline_tap_desc", lang),
-            t("inline_loading_title", lang),
+        [InlineQueryResultArticle(
+            id=f"{cmd}:{uid}",
+            title=f"{t(f'inline_{cmd}_title', lang)} — {uid}",
+            description=data.get("AccountInfo", {}).get("nickname", uid),
+            input_message_content=InputTextMessageContent(message_text=result_text, parse_mode="Markdown"),
         )],
-        cache_time=0, is_personal=True,
+        cache_time=5, is_personal=True,
     )
 
 @dp.chosen_inline_result()
 async def chosen_inline_result_handler(chosen: ChosenInlineResult, session: aiohttp.ClientSession):
-    """Foydalanuvchi inline natijani TANLAGANDAN keyin ishga tushadi - barcha
-    og'ir/sekin API so'rovlari shu yerda, fonda bajariladi, keyin xabar
-    tayyor hisobot/rasm bilan almashtiriladi."""
+    """Foydalanuvchi inline natijani tanlagach ishga tushadi. Faqat 'banner:<uid>'
+    natijalari uchun matnni haqiqiy rasmga almashtiramiz."""
     if not chosen.inline_message_id:
         return
 
     result_id = chosen.result_id or ""
     if ":" not in result_id:
         return
+    cmd, uid = result_id.split(":", 1)
+    if cmd != "banner" or not uid.isdigit():
+        return
 
-    parts = result_id.split(":")
-    cmd = parts[0]
     lang = await get_user_lang(chosen.from_user.id, "private")
 
-    if cmd == "banner":
-        uid = parts[1] if len(parts) > 1 else ""
-        if not uid.isdigit():
-            return
-        banner_url = f"{FF_API_BASE}/avatar-banner?uid={uid}"
-        outfit_url = f"{FF_API_BASE}/player-live-outfits?uid={uid}"
-        banner_bytes, outfit_bytes = await asyncio.gather(
-            fetch_bytes(session, banner_url),
-            fetch_bytes(session, outfit_url),
+    banner_url = f"{FF_API_BASE}/avatar-banner?uid={uid}"
+    outfit_url = f"{FF_API_BASE}/player-live-outfits?uid={uid}"
+    banner_bytes, outfit_bytes = await asyncio.gather(
+        fetch_bytes(session, banner_url),
+        fetch_bytes(session, outfit_url),
+    )
+
+    if not banner_bytes and not outfit_bytes:
+        try:
+            await bot.edit_message_text(
+                inline_message_id=chosen.inline_message_id,
+                text=t("photos_failed", lang),
+            )
+        except Exception as e:
+            logging.warning(f"Inline banner matn yangilashda xato: {e}")
+        return
+
+    if banner_bytes and outfit_bytes:
+        final_bytes = await combine_banner_and_outfit_async(banner_bytes, outfit_bytes)
+        caption = t("banner_caption_combined", lang)
+    elif banner_bytes:
+        final_bytes = banner_bytes
+        caption = t("banner_caption1", lang)
+    else:
+        final_bytes = outfit_bytes
+        caption = t("banner_caption2", lang)
+
+    photo_file = BufferedInputFile(final_bytes, filename="banner.jpg")
+
+    try:
+        await bot.edit_message_media(
+            inline_message_id=chosen.inline_message_id,
+            media=InputMediaPhoto(media=photo_file, caption=caption, parse_mode="Markdown"),
         )
-
-        if not banner_bytes and not outfit_bytes:
-            try:
-                await bot.edit_message_text(
-                    inline_message_id=chosen.inline_message_id,
-                    text=t("photos_failed", lang),
-                )
-            except Exception as e:
-                logging.warning(f"Inline banner matn yangilashda xato: {e}")
-            return
-
-        if banner_bytes and outfit_bytes:
-            final_bytes = await combine_banner_and_outfit_async(banner_bytes, outfit_bytes)
-            caption = t("banner_caption_combined", lang)
-        elif banner_bytes:
-            final_bytes = banner_bytes
-            caption = t("banner_caption1", lang)
-        else:
-            final_bytes = outfit_bytes
-            caption = t("banner_caption2", lang)
-
-        photo_file = BufferedInputFile(final_bytes, filename="banner.jpg")
-
-        try:
-            await bot.edit_message_media(
-                inline_message_id=chosen.inline_message_id,
-                media=InputMediaPhoto(media=photo_file, caption=caption, parse_mode="Markdown"),
-            )
-        except Exception as e:
-            logging.warning(f"Inline rasm biriktirishda xato: {e}")
-            try:
-                await bot.edit_message_text(
-                    inline_message_id=chosen.inline_message_id,
-                    text=t("photos_failed", lang),
-                )
-            except Exception:
-                pass
-        return
-
-    if cmd in ("info", "bancheck", "region"):
-        uid = parts[1] if len(parts) > 1 else ""
-        if not uid.isdigit():
-            return
-        info_url = f"{FF_API_BASE}/player-info?uid={uid}"
-        data = await fetch_json(session, info_url)
-        if not data:
-            try:
-                await bot.edit_message_text(inline_message_id=chosen.inline_message_id, text=t("not_found", lang))
-            except Exception as e:
-                logging.warning(f"Inline {cmd} matn yangilashda xato: {e}")
-            return
-
-        if cmd == "info":
-            result_text = build_info_text(data, lang)
-        elif cmd == "bancheck":
-            result_text = build_bancheck_text(data, lang)
-        else:
-            result_text = build_region_text(data, lang)
-
+    except Exception as e:
+        # Ba'zi mijoz-versiyalarda inline xabarga yangi fayl yuklash cheklangan
+        # bo'lishi mumkin - bu holda hech bo'lmasa xabar matnini yangilaymiz.
+        logging.warning(f"Inline rasm biriktirishda xato: {e}")
         try:
             await bot.edit_message_text(
                 inline_message_id=chosen.inline_message_id,
-                text=result_text,
-                parse_mode="Markdown",
+                text=t("photos_failed", lang),
             )
-        except Exception as e:
-            logging.warning(f"Inline {cmd} matn yangilashda xato: {e}")
-        return
-
-    if cmd == "token":
-        # id shakli: token:<uid>:<password>
-        if len(parts) < 3:
-            return
-        uid, password = parts[1], ":".join(parts[2:])
-        jwt_url = f"{FF_API_BASE}/token?uid={uid}&password={password}"
-        data = await fetch_json(session, jwt_url)
-        if not data or not isinstance(data, dict):
-            try:
-                await bot.edit_message_text(inline_message_id=chosen.inline_message_id, text=t("token_failed", lang))
-            except Exception as e:
-                logging.warning(f"Inline token matn yangilashda xato: {e}")
-            return
-        result_text = build_token_text(data, lang)
-        try:
-            await bot.edit_message_text(
-                inline_message_id=chosen.inline_message_id,
-                text=result_text,
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            logging.warning(f"Inline token matn yangilashda xato: {e}")
-        return
-
-    if cmd == "like":
-        # id shakli: like:<REGION>:<uid>
-        if len(parts) < 3:
-            return
-        region, uid = parts[1], parts[2]
-        user_id = chosen.from_user.id
-
-        limit = await get_like_limit()
-        used = await get_like_usage(user_id)
-        if used >= limit:
-            try:
-                await bot.edit_message_text(
-                    inline_message_id=chosen.inline_message_id,
-                    text=t("like_limit_reached", lang, limit=limit),
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logging.warning(f"Inline like limit xabarini yangilashda xato: {e}")
-            return
-
-        result_text, success = await perform_like(session, region, uid, lang)
-        if success:
-            await increment_like_usage(user_id)
-
-        try:
-            await bot.edit_message_text(
-                inline_message_id=chosen.inline_message_id,
-                text=result_text,
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            logging.warning(f"Inline like hisobotini yangilashda xato: {e}")
-        return
+        except Exception:
+            pass
 
 # ==========================================
 # 🌐 RENDER UCHUN KEEP-ALIVE (WEB SERVER + SELF-PING)
@@ -1975,6 +1786,7 @@ async def handle_ping(request):
     return web.Response(text="Bot ishlayapti ✅")
 
 async def start_webserver():
+    """Render bepul tarifida 'Web Service' sifatida ishlashi uchun HTTP server ochadi"""
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
@@ -1985,16 +1797,20 @@ async def start_webserver():
     logging.info(f"Web server {port}-portda ishga tushdi (Render uchun).")
 
 async def self_ping_loop(session: aiohttp.ClientSession):
+    """Render 15 daqiqa tashqi HTTP so'rov kelmasa botni uxlatib qo'yadi,
+    shuning uchun har 5 daqiqada o'ziga o'zi yengil GET so'rov yuboradi."""
     port = int(os.environ.get("PORT", 8080))
     target_url = SELF_URL or f"http://127.0.0.1:{port}/"
 
     if not SELF_URL:
         logging.warning(
-            "RENDER_EXTERNAL_URL topilmadi, shuning uchun lokal manzilga ping qilinmoqda."
+            "RENDER_EXTERNAL_URL topilmadi, shuning uchun lokal manzilga ping qilinmoqda. "
+            "Bu Render'da mahalliy muhitda (dev rejimida) ishlayotganda normal holat; "
+            "Render'ga joylashtirilganda bu o'zgaruvchi avtomatik mavjud bo'ladi."
         )
 
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(300)  # 5 daqiqa
         try:
             async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 logging.info(f"Self-ping yuborildi ({target_url}), status: {resp.status}")
@@ -2013,18 +1829,24 @@ async def main():
     except Exception as e:
         logging.warning(f"get_me() xatosi: {e}")
 
+    # TCPConnector: ulanishlarni qayta ishlatadi (keep-alive) va DNS'ni
+    # keshlaydi — bu tashqi Free Fire API'ga so'rovlarni sezilarli tezlashtiradi,
+    # ayniqsa bir vaqtda bir nechta foydalanuvchi buyruq yuborganda.
     connector = aiohttp.TCPConnector(limit=100, limit_per_host=50, ttl_dns_cache=300)
     session_timeout = aiohttp.ClientTimeout(total=20)
 
     async with aiohttp.ClientSession(connector=connector, timeout=session_timeout) as session:
+        # Middleware'lar
         dp.message.outer_middleware(AutoRegisterMiddleware())
         dp.message.outer_middleware(ForceSubscribeMiddleware())
 
+        # Har bir handlerga session ulash
         @dp.update.outer_middleware
         async def session_middleware(handler, event, data):
             data["session"] = session
             return await handler(event, data)
 
+        # Render uchun web server va self-ping
         await start_webserver()
         asyncio.create_task(self_ping_loop(session))
 
