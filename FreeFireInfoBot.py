@@ -35,19 +35,34 @@ BOT_USERNAME = "FreeFire2026Chat"
 # ==========================================
 # 🗄️ SUPABASE ULANISHI
 # ==========================================
-# users jadvali: id (auto), chat_id (unique bo'lishi SHART - upsert shuning uchun ishlaydi)
+# users jadvali: id (auto), chat_id (unique bo'lishi SHART - upsert shuning uchun ishlaydi), lang
 # majburiy jadvali: id (auto), channel_id (unique bo'lishi SHART), title, username
-# user_lang jadvali (YANGI - ko'p tillilik uchun): id (auto), user_id (unique bo'lishi SHART), lang
+# like_usage jadvali (YANGI - /like kunlik limiti uchun): user_id, usage_date, count
+# settings jadvali (YANGI - /likelimit qiymatini saqlash uchun): key (unique), value
 #
-# DIQQAT: Supabase'da SQL Editor orqali quyidagini bir marta bajaring, aks holda
-# upsert() amali dublikatlarni oldini ololmaydi:
+# DIQQAT: Supabase'da SQL Editor orqali QUYIDAGI HAMMASINI bir marta bajaring,
+# aks holda til tanlash va /like buyruqlari to'g'ri ishlamaydi:
+#
 #   ALTER TABLE users ADD CONSTRAINT users_chat_id_key UNIQUE (chat_id);
 #   ALTER TABLE majburiy ADD CONSTRAINT majburiy_channel_id_key UNIQUE (channel_id);
 #
-#   CREATE TABLE IF NOT EXISTS user_lang (
+#   -- Til (uz/en) shu yerda, "users" jadvalining o'zida saqlanadi:
+#   ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT DEFAULT 'uz';
+#
+#   -- /like buyrug'i uchun kunlik limit hisoblagichi:
+#   CREATE TABLE IF NOT EXISTS like_usage (
 #       id BIGSERIAL PRIMARY KEY,
-#       user_id BIGINT NOT NULL UNIQUE,
-#       lang TEXT NOT NULL DEFAULT 'uz'
+#       user_id BIGINT NOT NULL,
+#       usage_date DATE NOT NULL,
+#       count INT NOT NULL DEFAULT 0,
+#       UNIQUE (user_id, usage_date)
+#   );
+#
+#   -- /likelimit orqali o'rnatiladigan kunlik limit qiymati:
+#   CREATE TABLE IF NOT EXISTS settings (
+#       id BIGSERIAL PRIMARY KEY,
+#       key TEXT NOT NULL UNIQUE,
+#       value TEXT
 #   );
 
 SUPABASE_URL = "https://ybyjpcmvmgrbwupyordo.supabase.co"
@@ -65,7 +80,8 @@ SELF_URL = os.environ.get("RENDER_EXTERNAL_URL")
 # Botning barcha tan oladigan komandalari (slashsiz, kichik harflarda)
 KNOWN_COMMANDS = {
     "start", "help", "info", "bancheck", "banner",
-    "region", "token", "rek", "majburiy", "remover", "royxat", "setlang"
+    "region", "token", "rek", "majburiy", "remover", "royxat", "setlang",
+    "like", "likelimit"
 }
 
 def extract_command(text: str):
@@ -116,6 +132,8 @@ BOT_INFO_TEXT_UZ = (
     "│   Masalan: `/region 8530477563`\n"
     "├─ /token <uid> <parol> — JWT token olish\n"
     "│   Masalan: `/token 15088864083 sizning_parolingiz`\n"
+    "├─ /like <region> <uid> — o'yinchiga layk (like) yuborish\n"
+    "│   Masalan: `/like RU 8530477563`\n"
     "├─ /setlang — bot tilini tanlash (🇺🇿 / 🇬🇧)\n"
     "└─ /help — ushbu yordam xabari\n\n"
     "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
@@ -141,6 +159,8 @@ BOT_INFO_TEXT_EN = (
     "│   Example: `/region 8530477563`\n"
     "├─ /token <uid> <password> — get a JWT token\n"
     "│   Example: `/token 15088864083 your_password`\n"
+    "├─ /like <region> <uid> — send a like to a player\n"
+    "│   Example: `/like RU 8530477563`\n"
     "├─ /setlang — choose the bot's language (🇺🇿 / 🇬🇧)\n"
     "└─ /help — this help message\n\n"
     "ℹ️ You can send commands with `/` (`/info 123`) or without it (`info 123`).\n"
@@ -305,6 +325,37 @@ TR = {
         "sub_check_button": "✅ Obuna bo'ldim, tekshirish",
         "sub_not_yet": "❌ Siz hali barcha kanal/guruhlarga obuna bo'lmagansiz!",
         "sub_confirmed": "✅ Obuna tasdiqlandi! Endi botdan to'liq foydalanishingiz mumkin.",
+        "like_usage_msg": "❌ Xato! Region va UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/like RU 8530477563`",
+        "like_region_invalid": "❌ Region nomi noto'g'ri! Faqat harflardan iborat bo'lishi kerak (masalan: RU, ID, BD, PK, VN).",
+        "like_loading": "❤️ Layk yuborilmoqda...",
+        "like_limit_reached": "⛔ Siz bugungi layk limitiga yetdingiz (kuniga `{limit}` ta). Ertaga qayta urinib ko'ring.",
+        "likelimit_usage": "❌ To'g'ri ishlatish: `/likelimit 1` yoki `/likelimit 2`",
+        "likelimit_set": "✅ Kunlik layk limiti endi: `{limit}` ta/foydalanuvchi.",
+        "like_status_success": "✅ Muvaffaqiyatli",
+        "like_status_fail": "❌ Muvaffaqiyatsiz (bugungi limit tugagan yoki UID xato)",
+        "like_success_template": (
+            "✅ **Layk Muvaffaqiyatli Yuborildi!**\n\n"
+            "├─ 🏷 Nik: `{nickname}`\n"
+            "├─ 🆔 UID: `{uid}`\n"
+            "├─ ⭐ Daraja: `{level}`\n"
+            "├─ ❤️ Oldingi layk soni: `{likes_before}`\n"
+            "├─ ❤️ Hozirgi layk soni: `{likes_after}`\n"
+            "├─ 🎉 Yuborilgan layklar: `{likes_given}`\n"
+            "└─ 📌 Holat: `{status}`"
+        ),
+        "like_fail_template": (
+            "❌ **Layk Yuborilmadi**\n\n"
+            "├─ 🏷 Nik: `{nickname}`\n"
+            "├─ 🆔 UID: `{uid}`\n"
+            "├─ ⭐ Daraja: `{level}`\n"
+            "├─ ❤️ Oldingi layk soni: `{likes_before}`\n"
+            "├─ ❤️ Hozirgi layk soni: `{likes_after}`\n"
+            "├─ 🎉 Yuborilgan layklar: `{likes_given}`\n"
+            "└─ 📌 Holat: `{status}`"
+        ),
+        "inline_like_title": "❤️ /like <region> <uid> — layk yuborish",
+        "inline_like_desc": "Masalan: like RU 8530477563",
+        "inline_like_missing_desc": "like <region> <uid> shaklida yozing, masalan: like RU 8530477563",
     },
     "en": {
         "start_help": BOT_INFO_TEXT_EN,
@@ -461,6 +512,37 @@ TR = {
         "sub_check_button": "✅ I subscribed, check",
         "sub_not_yet": "❌ You haven't subscribed to all the required channels/groups yet!",
         "sub_confirmed": "✅ Subscription confirmed! You can now fully use the bot.",
+        "like_usage_msg": "❌ Error! You forgot to enter the region and UID.\nCorrect usage: `/like RU 8530477563`",
+        "like_region_invalid": "❌ Invalid region! It must contain letters only (e.g. RU, ID, BD, PK, VN).",
+        "like_loading": "❤️ Sending like...",
+        "like_limit_reached": "⛔ You've reached today's like limit (`{limit}` per day). Please try again tomorrow.",
+        "likelimit_usage": "❌ Correct usage: `/likelimit 1` or `/likelimit 2`",
+        "likelimit_set": "✅ Daily like limit is now: `{limit}` per user.",
+        "like_status_success": "✅ Success",
+        "like_status_fail": "❌ Failed (daily limit reached or invalid UID)",
+        "like_success_template": (
+            "✅ **Like Sent Successfully!**\n\n"
+            "├─ 🏷 Nickname: `{nickname}`\n"
+            "├─ 🆔 UID: `{uid}`\n"
+            "├─ ⭐ Level: `{level}`\n"
+            "├─ ❤️ Likes before: `{likes_before}`\n"
+            "├─ ❤️ Likes now: `{likes_after}`\n"
+            "├─ 🎉 Likes sent: `{likes_given}`\n"
+            "└─ 📌 Status: `{status}`"
+        ),
+        "like_fail_template": (
+            "❌ **Like Not Sent**\n\n"
+            "├─ 🏷 Nickname: `{nickname}`\n"
+            "├─ 🆔 UID: `{uid}`\n"
+            "├─ ⭐ Level: `{level}`\n"
+            "├─ ❤️ Likes before: `{likes_before}`\n"
+            "├─ ❤️ Likes now: `{likes_after}`\n"
+            "├─ 🎉 Likes sent: `{likes_given}`\n"
+            "└─ 📌 Status: `{status}`"
+        ),
+        "inline_like_title": "❤️ /like <region> <uid> — send a like",
+        "inline_like_desc": "Example: like RU 8530477563",
+        "inline_like_missing_desc": "Type it as: like <region> <uid>, e.g. like RU 8530477563",
     },
 }
 
@@ -477,27 +559,31 @@ def t(key: str, lang: str, **kwargs) -> str:
     except (KeyError, IndexError):
         return template
 
-# --- FOYDALANUVCHI TILI: SAQLASH VA O'QISH (Supabase: "user_lang" jadvali) ---
+# --- FOYDALANUVCHI TILI: SAQLASH VA O'QISH (Supabase: "users" jadvalining "lang" ustuni) ---
+# DIQQAT: bu foydalanuvchining shaxsiy tanlovi bo'lgani uchun "chat_id" o'rniga
+# har doim foydalanuvchining haqiqiy Telegram user_id'si bilan yoziladi/o'qiladi
+# (guruh chat_id'lari manfiy son bo'lgani uchun bu bilan hech qanday
+# to'qnashuv bo'lmaydi).
 
 _LANG_CACHE: dict[int, str] = {}  # user_id -> lang (jarayon xotirasida keshlash)
 
 def _get_user_lang_sync(user_id: int):
     try:
-        resp = supabase.table("user_lang").select("lang").eq("user_id", user_id).limit(1).execute()
+        resp = supabase.table("users").select("lang").eq("chat_id", user_id).limit(1).execute()
         if resp.data:
             return resp.data[0].get("lang")
     except Exception as e:
-        logging.error(f"Til o'qish xatosi ({user_id}): {e}")
+        logging.error(f"Til o'qish xatosi ({user_id}): {e} — 'users' jadvalida 'lang' ustuni borligini tekshiring (ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT DEFAULT 'uz';)")
     return None
 
 def _set_user_lang_sync(user_id: int, lang: str) -> bool:
     try:
-        supabase.table("user_lang").upsert(
-            {"user_id": user_id, "lang": lang}, on_conflict="user_id"
+        supabase.table("users").upsert(
+            {"chat_id": user_id, "lang": lang}, on_conflict="chat_id"
         ).execute()
         return True
     except Exception as e:
-        logging.error(f"Til yozish xatosi ({user_id}): {e}")
+        logging.error(f"Til yozish xatosi ({user_id}): {e} — 'users' jadvalida 'lang' ustuni borligini tekshiring (ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT DEFAULT 'uz';)")
         return False
 
 async def get_user_lang(user_id: int, chat_type: str = "private") -> str:
@@ -522,9 +608,15 @@ async def get_user_lang(user_id: int, chat_type: str = "private") -> str:
 async def set_user_lang(user_id: int, lang: str) -> bool:
     if lang not in SUPPORTED_LANGS:
         return False
+    # Keshni DARHOL yangilaymiz - shunda til shu zahotiyoq almashadi, hatto
+    # Supabase'ga yozish biror sababga ko'ra muvaffaqiyatsiz tugasa ham
+    # (masalan jadvalda "lang" ustuni hali qo'shilmagan bo'lsa) foydalanuvchi
+    # buni joriy sessiyada darrov his qiladi, keyin loglardan sababni topib
+    # tuzatish mumkin bo'ladi.
+    _LANG_CACHE[user_id] = lang
     ok = await asyncio.to_thread(_set_user_lang_sync, user_id, lang)
-    if ok:
-        _LANG_CACHE[user_id] = lang
+    if not ok:
+        logging.warning(f"Til Supabase'ga saqlanmadi (user_id={user_id}) - bot qayta ishga tushsa til yana standart holatga qaytadi.")
     return ok
 
 # ==========================================
