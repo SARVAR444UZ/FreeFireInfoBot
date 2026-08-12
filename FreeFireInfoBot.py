@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.filters import Command, BaseFilter
@@ -37,8 +37,8 @@ BOT_USERNAME = "FreeFire2026Chat"
 # ==========================================
 # users jadvali: id (auto), chat_id (unique bo'lishi SHART - upsert shuning uchun ishlaydi), lang
 # majburiy jadvali: id (auto), channel_id (unique bo'lishi SHART), title, username
-# like_usage jadvali (YANGI - /like kunlik limiti uchun): user_id, usage_date, count
-# settings jadvali (YANGI - /likelimit qiymatini saqlash uchun): key (unique), value
+# like_usage jadvali (/like kunlik limiti uchun): user_id, usage_date, count
+# settings jadvali (/likelimit qiymatini saqlash uchun): key (unique), value
 #
 # DIQQAT: Supabase'da SQL Editor orqali QUYIDAGI HAMMASINI bir marta bajaring,
 # aks holda til tanlash va /like buyruqlari to'g'ri ishlamaydi:
@@ -132,8 +132,8 @@ BOT_INFO_TEXT_UZ = (
     "│   Masalan: `/region 8530477563`\n"
     "├─ /token <uid> <parol> — JWT token olish\n"
     "│   Masalan: `/token 15088864083 sizning_parolingiz`\n"
-    "├─ /like <region> <uid> — o'yinchiga layk (like) yuborish\n"
-    "│   Masalan: `/like RU 8530477563`\n"
+    "├─ /like <uid> <region> — o'yinchiga layk (like) yuborish\n"
+    "│   Masalan: `/like 8530477563 RU`\n"
     "├─ /setlang — bot tilini tanlash (🇺🇿 / 🇬🇧)\n"
     "└─ /help — ushbu yordam xabari\n\n"
     "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
@@ -159,8 +159,8 @@ BOT_INFO_TEXT_EN = (
     "│   Example: `/region 8530477563`\n"
     "├─ /token <uid> <password> — get a JWT token\n"
     "│   Example: `/token 15088864083 your_password`\n"
-    "├─ /like <region> <uid> — send a like to a player\n"
-    "│   Example: `/like RU 8530477563`\n"
+    "├─ /like <uid> <region> — send a like to a player\n"
+    "│   Example: `/like 8530477563 RU`\n"
     "├─ /setlang — choose the bot's language (🇺🇿 / 🇬🇧)\n"
     "└─ /help — this help message\n\n"
     "ℹ️ You can send commands with `/` (`/info 123`) or without it (`info 123`).\n"
@@ -325,10 +325,11 @@ TR = {
         "sub_check_button": "✅ Obuna bo'ldim, tekshirish",
         "sub_not_yet": "❌ Siz hali barcha kanal/guruhlarga obuna bo'lmagansiz!",
         "sub_confirmed": "✅ Obuna tasdiqlandi! Endi botdan to'liq foydalanishingiz mumkin.",
-        "like_usage_msg": "❌ Xato! Region va UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/like RU 8530477563`",
+        "like_usage_msg": "❌ Xato! UID va Region kiritishni unutdingiz.\nTo'g'ri ishlatish: `/like 8530477563 RU`",
         "like_region_invalid": "❌ Region nomi noto'g'ri! Faqat harflardan iborat bo'lishi kerak (masalan: RU, ID, BD, PK, VN).",
-        "like_loading": "❤️ Layk yuborilmoqda...",
+        "like_loading": "🔄 Kuting, layk yuborilmoqda...",
         "like_limit_reached": "⛔ Siz bugungi layk limitiga yetdingiz (kuniga `{limit}` ta). Ertaga qayta urinib ko'ring.",
+        "like_api_error": "❌ Like API bilan bog'lanib bo'lmadi (server javob bermadi yoki xatolik yuz berdi). Birozdan so'ng qayta urinib ko'ring.",
         "likelimit_usage": "❌ To'g'ri ishlatish: `/likelimit 1` yoki `/likelimit 2`",
         "likelimit_set": "✅ Kunlik layk limiti endi: `{limit}` ta/foydalanuvchi.",
         "like_status_success": "✅ Muvaffaqiyatli",
@@ -337,7 +338,7 @@ TR = {
             "✅ **Layk Muvaffaqiyatli Yuborildi!**\n\n"
             "├─ 🏷 Nik: `{nickname}`\n"
             "├─ 🆔 UID: `{uid}`\n"
-            "├─ ⭐ Daraja: `{level}`\n"
+            "├─ 🌍 Region: `{region}`\n"
             "├─ ❤️ Oldingi layk soni: `{likes_before}`\n"
             "├─ ❤️ Hozirgi layk soni: `{likes_after}`\n"
             "├─ 🎉 Yuborilgan layklar: `{likes_given}`\n"
@@ -347,15 +348,15 @@ TR = {
             "❌ **Layk Yuborilmadi**\n\n"
             "├─ 🏷 Nik: `{nickname}`\n"
             "├─ 🆔 UID: `{uid}`\n"
-            "├─ ⭐ Daraja: `{level}`\n"
+            "├─ 🌍 Region: `{region}`\n"
             "├─ ❤️ Oldingi layk soni: `{likes_before}`\n"
             "├─ ❤️ Hozirgi layk soni: `{likes_after}`\n"
             "├─ 🎉 Yuborilgan layklar: `{likes_given}`\n"
             "└─ 📌 Holat: `{status}`"
         ),
-        "inline_like_title": "❤️ /like <region> <uid> — layk yuborish",
-        "inline_like_desc": "Masalan: like RU 8530477563",
-        "inline_like_missing_desc": "like <region> <uid> shaklida yozing, masalan: like RU 8530477563",
+        "inline_like_title": "❤️ /like <uid> <region> — layk yuborish",
+        "inline_like_desc": "Masalan: like 8530477563 RU",
+        "inline_like_missing_desc": "like <uid> <region> shaklida yozing, masalan: like 8530477563 RU",
     },
     "en": {
         "start_help": BOT_INFO_TEXT_EN,
@@ -512,10 +513,11 @@ TR = {
         "sub_check_button": "✅ I subscribed, check",
         "sub_not_yet": "❌ You haven't subscribed to all the required channels/groups yet!",
         "sub_confirmed": "✅ Subscription confirmed! You can now fully use the bot.",
-        "like_usage_msg": "❌ Error! You forgot to enter the region and UID.\nCorrect usage: `/like RU 8530477563`",
+        "like_usage_msg": "❌ Error! You forgot to enter the UID and region.\nCorrect usage: `/like 8530477563 RU`",
         "like_region_invalid": "❌ Invalid region! It must contain letters only (e.g. RU, ID, BD, PK, VN).",
-        "like_loading": "❤️ Sending like...",
+        "like_loading": "🔄 Please wait, sending like...",
         "like_limit_reached": "⛔ You've reached today's like limit (`{limit}` per day). Please try again tomorrow.",
+        "like_api_error": "❌ Could not reach the Like API (no response or a server error). Please try again shortly.",
         "likelimit_usage": "❌ Correct usage: `/likelimit 1` or `/likelimit 2`",
         "likelimit_set": "✅ Daily like limit is now: `{limit}` per user.",
         "like_status_success": "✅ Success",
@@ -524,7 +526,7 @@ TR = {
             "✅ **Like Sent Successfully!**\n\n"
             "├─ 🏷 Nickname: `{nickname}`\n"
             "├─ 🆔 UID: `{uid}`\n"
-            "├─ ⭐ Level: `{level}`\n"
+            "├─ 🌍 Region: `{region}`\n"
             "├─ ❤️ Likes before: `{likes_before}`\n"
             "├─ ❤️ Likes now: `{likes_after}`\n"
             "├─ 🎉 Likes sent: `{likes_given}`\n"
@@ -534,15 +536,15 @@ TR = {
             "❌ **Like Not Sent**\n\n"
             "├─ 🏷 Nickname: `{nickname}`\n"
             "├─ 🆔 UID: `{uid}`\n"
-            "├─ ⭐ Level: `{level}`\n"
+            "├─ 🌍 Region: `{region}`\n"
             "├─ ❤️ Likes before: `{likes_before}`\n"
             "├─ ❤️ Likes now: `{likes_after}`\n"
             "├─ 🎉 Likes sent: `{likes_given}`\n"
             "└─ 📌 Status: `{status}`"
         ),
-        "inline_like_title": "❤️ /like <region> <uid> — send a like",
-        "inline_like_desc": "Example: like RU 8530477563",
-        "inline_like_missing_desc": "Type it as: like <region> <uid>, e.g. like RU 8530477563",
+        "inline_like_title": "❤️ /like <uid> <region> — send a like",
+        "inline_like_desc": "Example: like 8530477563 RU",
+        "inline_like_missing_desc": "Type it as: like <uid> <region>, e.g. like 8530477563 RU",
     },
 }
 
@@ -706,6 +708,88 @@ async def majburiy_get_ids(session: aiohttp.ClientSession):
 async def majburiy_remove_id(session: aiohttp.ClientSession, chat_id):
     """Majburiy azolik ro'yxatidan ID'ni o'chiradi"""
     return await asyncio.to_thread(_majburiy_remove_id_sync, chat_id)
+
+# ==========================================
+# ❤️ /like KUNLIK LIMIT VA SOZLAMALAR BAZASI
+# (Supabase: "like_usage" va "settings" jadvallari)
+# ==========================================
+
+DEFAULT_LIKE_LIMIT = 1  # /likelimit orqali o'zgartirilmagan bo'lsa ishlatiladigan standart qiymat
+
+def _today_str() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+def _get_like_limit_sync() -> int:
+    try:
+        resp = supabase.table("settings").select("value").eq("key", "like_daily_limit").limit(1).execute()
+        if resp.data:
+            try:
+                return int(resp.data[0].get("value"))
+            except (TypeError, ValueError):
+                pass
+    except Exception as e:
+        logging.error(f"Like limit o'qish xatosi: {e} — 'settings' jadvali mavjudligini tekshiring.")
+    return DEFAULT_LIKE_LIMIT
+
+def _set_like_limit_sync(limit: int) -> bool:
+    try:
+        supabase.table("settings").upsert(
+            {"key": "like_daily_limit", "value": str(limit)}, on_conflict="key"
+        ).execute()
+        return True
+    except Exception as e:
+        logging.error(f"Like limit yozish xatosi: {e} — 'settings' jadvali mavjudligini tekshiring.")
+        return False
+
+def _get_like_usage_count_sync(user_id: int) -> int:
+    today = _today_str()
+    try:
+        resp = (
+            supabase.table("like_usage")
+            .select("count")
+            .eq("user_id", user_id)
+            .eq("usage_date", today)
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            return int(resp.data[0].get("count", 0) or 0)
+    except Exception as e:
+        logging.error(f"Like usage o'qish xatosi ({user_id}): {e} — 'like_usage' jadvali mavjudligini tekshiring.")
+    return 0
+
+def _increment_like_usage_sync(user_id: int) -> bool:
+    today = _today_str()
+    try:
+        resp = (
+            supabase.table("like_usage")
+            .select("count")
+            .eq("user_id", user_id)
+            .eq("usage_date", today)
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            new_count = int(resp.data[0].get("count", 0) or 0) + 1
+            supabase.table("like_usage").update({"count": new_count}).eq("user_id", user_id).eq("usage_date", today).execute()
+        else:
+            supabase.table("like_usage").insert({"user_id": user_id, "usage_date": today, "count": 1}).execute()
+        return True
+    except Exception as e:
+        logging.error(f"Like usage yozish xatosi ({user_id}): {e} — 'like_usage' jadvali mavjudligini tekshiring.")
+        return False
+
+async def get_like_limit() -> int:
+    return await asyncio.to_thread(_get_like_limit_sync)
+
+async def set_like_limit(limit: int) -> bool:
+    return await asyncio.to_thread(_set_like_limit_sync, limit)
+
+async def get_like_usage_count(user_id: int) -> int:
+    return await asyncio.to_thread(_get_like_usage_count_sync, user_id)
+
+async def increment_like_usage(user_id: int) -> bool:
+    return await asyncio.to_thread(_increment_like_usage_sync, user_id)
 
 # --- BAZAGA AVTOMATIK QO'SHISH MIDDLEWARE ---
 
@@ -1125,10 +1209,12 @@ async def combine_banner_and_outfit_async(banner_bytes, outfit_bytes):
 # --- API SO'ROVLARI ---
 
 FF_API_BASE = "https://solanki-info-free-fire-player-statu.vercel.app"
+LIKE_API_BASE = "https://ff-like-444.vercel.app"
 
 # Tashqi Free Fire API'ga so'rovlar uchun umumiy timeout — cheksiz kutib
 # qolmaslik uchun (aks holda bitta sekin so'rov butun handlerni ushlab turadi)
 API_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=5)
+LIKE_API_TIMEOUT = aiohttp.ClientTimeout(total=20, connect=5)
 
 async def fetch_json(session, url):
     try:
@@ -1283,6 +1369,111 @@ def build_token_text(data: dict, lang: str) -> str:
         access_token=data.get("access_token", unk),
         token=data.get("token", unk),
     )
+
+# ==========================================
+# ❤️ /like — LIKE API BILAN INTEGRATSIYA
+# ==========================================
+# API: GET https://ff-like-444.vercel.app/like?uid={uid}&server_name={region}
+#
+# DIQQAT: turli Like API'lar turli JSON kalit nomlarini qaytarishi mumkin
+# (masalan "PlayerNickname" yoki "player_name" yoki "nickname"). Shu sabab
+# javobni o'qishda bir nechta mumkin bo'lgan kalit nomlari birma-bir
+# tekshiriladi ("_pick" funksiyasi) - shunda API javobi biroz farq qilsa ham
+# bot xatolik bermay ishlashda davom etadi.
+
+def parse_uid_region(token_a: str, token_b: str):
+    """Ikkita token (har qanday tartibda: UID+Region yoki Region+UID)
+    qabul qilib, (uid, region) juftligini qaytaradi. Region har doim katta
+    harflarga o'tkaziladi. Noto'g'ri kiritilgan bo'lsa (None, None) qaytadi."""
+    a = (token_a or "").strip()
+    b = (token_b or "").strip()
+
+    if a.isdigit() and not b.isdigit():
+        uid, region = a, b
+    elif b.isdigit() and not a.isdigit():
+        uid, region = b, a
+    else:
+        return None, None
+
+    if not re.fullmatch(r'[A-Za-z]{2,5}', region):
+        return None, None
+
+    return uid, region.upper()
+
+def _pick(data: dict, *keys, default=None):
+    for k in keys:
+        if k in data and data[k] not in (None, ""):
+            return data[k]
+    return default
+
+def _is_like_success(data: dict) -> bool:
+    status_val = _pick(data, "status", "Status", "success", "Success", default=None)
+    if status_val is None:
+        # Ba'zi API'lar faqat likes_given > 0 bo'lsa muvaffaqiyatli hisoblanadi
+        given = _pick(data, "LikesGivenByAPI", "likes_given", "LikesGiven", default=0)
+        try:
+            return int(given) > 0
+        except (TypeError, ValueError):
+            return False
+    return str(status_val).strip().lower() in ("1", "true", "success", "ok")
+
+async def call_like_api(session: aiohttp.ClientSession, uid: str, region: str):
+    """Like API'ga so'rov yuboradi. Natija doim dict qaytaradi:
+    {"ok": bool, "data": dict|None, "error": str|None}
+    "ok" faqat tarmoq/HTTP darajasida so'rov muvaffaqiyatli bo'lganini
+    bildiradi (ya'ni JSON javob olindi) - layk berilgan-berilmaganini
+    _is_like_success() aniqlaydi."""
+    url = f"{LIKE_API_BASE}/like?uid={uid}&server_name={region}"
+    try:
+        async with session.get(url, timeout=LIKE_API_TIMEOUT) as resp:
+            try:
+                data = await resp.json(content_type=None)
+            except Exception:
+                data = None
+            if resp.status != 200 or not isinstance(data, dict):
+                return {"ok": False, "data": data if isinstance(data, dict) else None, "error": f"http_{resp.status}"}
+            return {"ok": True, "data": data, "error": None}
+    except asyncio.TimeoutError:
+        logging.warning(f"Like API timeout ({url})")
+        return {"ok": False, "data": None, "error": "timeout"}
+    except Exception as e:
+        logging.warning(f"Like API xatosi ({url}): {e}")
+        return {"ok": False, "data": None, "error": str(e)}
+
+def build_like_result_text(api_result: dict, uid: str, region: str, lang: str):
+    """API javobidan (yoki xatolikdan) tayyor, tarjima qilingan matn yasaydi.
+    Ikkinchi qiymat sifatida muvaffaqiyat holatini (bool) qaytaradi."""
+    unk = t("unknown", lang)
+
+    if not api_result.get("ok") or not isinstance(api_result.get("data"), dict):
+        # API bilan bog'lanib bo'lmadi yoki noto'g'ri javob keldi
+        text = t(
+            "like_fail_template", lang,
+            nickname=unk, uid=uid, region=region,
+            likes_before=unk, likes_after=unk, likes_given="0",
+            status=t("like_status_fail", lang),
+        )
+        return text, False
+
+    data = api_result["data"]
+    success = _is_like_success(data)
+
+    nickname = _pick(data, "PlayerNickname", "player_name", "nickname", "Nickname", default=unk)
+    likes_before = _pick(data, "LikesbeforeCommand", "likes_before", "LikesBefore", "likes_before_command", default=unk)
+    likes_after = _pick(data, "LikesafterCommand", "likes_after", "LikesAfter", "likes_after_command", default=unk)
+    likes_given = _pick(data, "LikesGivenByAPI", "likes_given", "LikesGiven", default="0")
+    resolved_uid = _pick(data, "UID", "uid", default=uid)
+
+    template_key = "like_success_template" if success else "like_fail_template"
+    status_text = t("like_status_success", lang) if success else t("like_status_fail", lang)
+
+    text = t(
+        template_key, lang,
+        nickname=nickname, uid=resolved_uid, region=region,
+        likes_before=likes_before, likes_after=likes_after,
+        likes_given=likes_given, status=status_text,
+    )
+    return text, success
 
 # ==========================================
 # 📢 REKLAMA YUBORISH KOMANDASI (rek)
@@ -1534,6 +1725,60 @@ async def token_command_handler(message: types.Message, session: aiohttp.ClientS
     result_text = build_token_text(data, lang)
     await waiting_msg.edit_text(result_text, parse_mode="Markdown")
 
+@dp.message(Cmd("like"))
+async def like_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
+    tokens = message.text.split()[1:]  # komandadan keyingi barcha so'zlar
+
+    if len(tokens) < 2:
+        await message.answer(t("like_usage_msg", lang), parse_mode="Markdown")
+        return
+
+    uid, region = parse_uid_region(tokens[0], tokens[1])
+    if uid is None:
+        # Ikkalasi ham raqam yoki ikkalasi ham harf bo'lsa aniqroq xabar beramiz
+        if tokens[0].strip().isdigit() and tokens[1].strip().isdigit():
+            await message.answer(t("like_region_invalid", lang))
+        else:
+            await message.answer(t("like_region_invalid", lang))
+        return
+
+    user_id = message.from_user.id
+    limit = await get_like_limit()
+    used = await get_like_usage_count(user_id)
+    if used >= limit:
+        await message.answer(t("like_limit_reached", lang, limit=limit), parse_mode="Markdown")
+        return
+
+    waiting_msg = await message.answer(t("like_loading", lang))
+
+    api_result = await call_like_api(session, uid, region)
+    await increment_like_usage(user_id)
+
+    result_text, _ = build_like_result_text(api_result, uid, region, lang)
+    try:
+        await waiting_msg.edit_text(result_text, parse_mode="Markdown")
+    except TelegramBadRequest:
+        # Matn o'zgarmagan bo'lsa Telegram xato beradi - bunday holatda e'tiborsiz qoldiramiz
+        pass
+
+@dp.message(Cmd("likelimit"))
+async def likelimit_command_handler(message: types.Message, session: aiohttp.ClientSession):
+    # Faqat bot egasi kunlik limitni o'zgartira oladi
+    if message.from_user.id != OWNER_ID:
+        return
+
+    lang = await get_user_lang(message.from_user.id, message.chat.type)
+    parts = message.text.split(maxsplit=1)
+
+    if len(parts) < 2 or parts[1].strip() not in ("1", "2"):
+        await message.answer(t("likelimit_usage", lang), parse_mode="Markdown")
+        return
+
+    limit = int(parts[1].strip())
+    await set_like_limit(limit)
+    await message.answer(t("likelimit_set", lang, limit=limit), parse_mode="Markdown")
+
 # ==========================================
 # 🔎 INLINE REJIM (@FreeFire2026Chat ...)
 # ==========================================
@@ -1544,7 +1789,7 @@ async def token_command_handler(message: types.Message, session: aiohttp.ClientS
 # /info kabi juda uzun matnli buyruqlar rasm bilan birga BITTA xabarda
 # bo'la olmaydi (rasm caption'i 1024 belgigacha, /info matni esa undan
 # ancha uzun). Shu sababli:
-#   - info/bancheck/region/token/help -> to'liq matn natija sifatida yuboriladi
+#   - info/bancheck/region/token/help/like -> to'liq matn natija sifatida yuboriladi
 #   - banner -> foydalanuvchi natijani tanlagach (chosen_inline_result),
 #     xabar avtomatik ravishda birlashtirilgan banner+outfit RASMIGA
 #     almashtiriladi.
@@ -1559,6 +1804,7 @@ def _inline_command_articles(lang: str):
         ("banner", t("inline_banner_title", lang), t("inline_banner_desc", lang)),
         ("region", t("inline_region_title", lang), t("inline_region_desc", lang)),
         ("token", t("inline_token_title", lang), t("inline_token_desc", lang)),
+        ("like", t("inline_like_title", lang), t("inline_like_desc", lang)),
     ]
     results = []
     for key, title, desc in items:
@@ -1611,7 +1857,7 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
     cmd = extract_command(query_text)
     parts = query_text.split(maxsplit=2)
 
-    if cmd not in ("info", "bancheck", "banner", "region", "token", "help"):
+    if cmd not in ("info", "bancheck", "banner", "region", "token", "help", "like"):
         # Noma'lum matn - tayyor buyruqlarni tavsiya qilamiz
         await inline_query.answer(_inline_command_articles(lang), cache_time=10, is_personal=True)
         return
@@ -1659,6 +1905,48 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
                 input_message_content=InputTextMessageContent(message_text=result_text, parse_mode="Markdown"),
             )],
             cache_time=5, is_personal=True,
+        )
+        return
+
+    if cmd == "like":
+        # @botname like <uid> <region>  (yoki <region> <uid> - tartib muhim emas)
+        if len(parts) < 3:
+            await inline_query.answer(
+                [_error_article("like_missing", t("inline_like_title", lang), t("inline_like_missing_desc", lang), t("like_usage_msg", lang))],
+                cache_time=5, is_personal=True,
+            )
+            return
+
+        uid, region = parse_uid_region(parts[1].strip(), parts[2].strip())
+        if uid is None:
+            await inline_query.answer(
+                [_error_article("like_invalid", t("inline_like_title", lang), t("inline_like_desc", lang), t("like_region_invalid", lang))],
+                cache_time=5, is_personal=True,
+            )
+            return
+
+        limit = await get_like_limit()
+        used = await get_like_usage_count(user_id)
+        if used >= limit:
+            await inline_query.answer(
+                [_error_article("like_limit", t("inline_like_title", lang), t("inline_like_desc", lang), t("like_limit_reached", lang, limit=limit))],
+                cache_time=0, is_personal=True,
+            )
+            return
+
+        api_result = await call_like_api(session, uid, region)
+        await increment_like_usage(user_id)
+        result_text, success = build_like_result_text(api_result, uid, region, lang)
+
+        icon = "✅" if success else "❌"
+        await inline_query.answer(
+            [InlineQueryResultArticle(
+                id=f"like:{uid}:{region}",
+                title=f"{icon} {t('inline_like_title', lang)} — {uid} ({region})",
+                description=result_text.replace("*", "").replace("`", "")[:100],
+                input_message_content=InputTextMessageContent(message_text=result_text, parse_mode="Markdown"),
+            )],
+            cache_time=0, is_personal=True,
         )
         return
 
