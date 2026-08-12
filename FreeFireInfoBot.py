@@ -12,8 +12,6 @@ from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
-    ChosenInlineResult,
-    InputMediaPhoto,
 )
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 import aiohttp
@@ -132,13 +130,13 @@ BOT_INFO_TEXT_UZ = (
     "│   Masalan: `/region 8530477563`\n"
     "├─ /token <uid> <parol> — JWT token olish\n"
     "│   Masalan: `/token 15088864083 sizning_parolingiz`\n"
-    "├─ /like <uid> <region> — o'yinchiga layk (like) yuborish\n"
-    "│   Masalan: `/like 8530477563 RU`\n"
+    "├─ /like <region> <uid> — o'yinchiga layk (like) yuborish\n"
+    "│   Masalan: `/like RU 8530477563`\n"
     "├─ /setlang — bot tilini tanlash (🇺🇿 / 🇬🇧)\n"
     "└─ /help — ushbu yordam xabari\n\n"
     "ℹ️ Barcha buyruqlarni `/` bilan ham (`/info 123`), `/`siz ham (`info 123`) yuborishingiz mumkin.\n"
     "ℹ️ Botni inline rejimda ham ishlatishingiz mumkin: istalgan chatda "
-    f"`@{BOT_USERNAME} info 123` deb yozing.\n"
+    f"`@{BOT_USERNAME} info 123` deb yozing (`/banner` inline rejimda ishlamaydi, faqat shaxsiy chatda).\n"
     "ℹ️ Barcha buyruqlardan foydalanish uchun avval botga majburiy obuna kanallariga "
     "a'zo bo'lishingiz kerak bo'lishi mumkin."
 )
@@ -159,13 +157,13 @@ BOT_INFO_TEXT_EN = (
     "│   Example: `/region 8530477563`\n"
     "├─ /token <uid> <password> — get a JWT token\n"
     "│   Example: `/token 15088864083 your_password`\n"
-    "├─ /like <uid> <region> — send a like to a player\n"
-    "│   Example: `/like 8530477563 RU`\n"
+    "├─ /like <region> <uid> — send a like to a player\n"
+    "│   Example: `/like RU 8530477563`\n"
     "├─ /setlang — choose the bot's language (🇺🇿 / 🇬🇧)\n"
     "└─ /help — this help message\n\n"
     "ℹ️ You can send commands with `/` (`/info 123`) or without it (`info 123`).\n"
     "ℹ️ You can also use the bot in inline mode: type "
-    f"`@{BOT_USERNAME} info 123` in any chat.\n"
+    f"`@{BOT_USERNAME} info 123` in any chat (`/banner` is not available inline, private chat only).\n"
     "ℹ️ You may need to subscribe to required channels before using the bot's commands."
 )
 
@@ -214,8 +212,6 @@ TR = {
         "inline_info_desc": "Masalan: info 8530477563",
         "inline_bancheck_title": "🚫 /bancheck <uid> — ban tekshirish",
         "inline_bancheck_desc": "Masalan: bancheck 8530477563",
-        "inline_banner_title": "🖼 /banner <uid> — rasm(lar)",
-        "inline_banner_desc": "Masalan: banner 8530477563",
         "inline_region_title": "🌍 /region <uid> — region ma'lumoti",
         "inline_region_desc": "Masalan: region 8530477563",
         "inline_token_title": "🔑 /token <uid> <parol> — JWT token",
@@ -325,7 +321,8 @@ TR = {
         "sub_check_button": "✅ Obuna bo'ldim, tekshirish",
         "sub_not_yet": "❌ Siz hali barcha kanal/guruhlarga obuna bo'lmagansiz!",
         "sub_confirmed": "✅ Obuna tasdiqlandi! Endi botdan to'liq foydalanishingiz mumkin.",
-        "like_usage_msg": "❌ Xato! UID va Region kiritishni unutdingiz.\nTo'g'ri ishlatish: `/like 8530477563 RU`",
+        "like_usage_msg": "❌ Xato! Region va UID kiritishni unutdingiz.\nTo'g'ri ishlatish: `/like RU 8530477563`",
+        "banner_private_only": "⚠️ `/banner` buyrug'i faqat botning shaxsiy (lichka) chatida ishlaydi. Botga shaxsiy yozib, shu yerdan foydalaning.",
         "like_region_invalid": "❌ Region nomi noto'g'ri! Faqat harflardan iborat bo'lishi kerak (masalan: RU, ID, BD, PK, VN).",
         "like_loading": "🔄 Kuting, layk yuborilmoqda...",
         "like_limit_reached": "⛔ Siz bugungi layk limitiga yetdingiz (kuniga `{limit}` ta). Ertaga qayta urinib ko'ring.",
@@ -354,9 +351,9 @@ TR = {
             "├─ 🎉 Yuborilgan layklar: `{likes_given}`\n"
             "└─ 📌 Holat: `{status}`"
         ),
-        "inline_like_title": "❤️ /like <uid> <region> — layk yuborish",
-        "inline_like_desc": "Masalan: like 8530477563 RU",
-        "inline_like_missing_desc": "like <uid> <region> shaklida yozing, masalan: like 8530477563 RU",
+        "inline_like_title": "❤️ /like <region> <uid> — layk yuborish",
+        "inline_like_desc": "Masalan: like RU 8530477563",
+        "inline_like_missing_desc": "like <region> <uid> shaklida yozing, masalan: like RU 8530477563",
     },
     "en": {
         "start_help": BOT_INFO_TEXT_EN,
@@ -402,8 +399,6 @@ TR = {
         "inline_info_desc": "Example: info 8530477563",
         "inline_bancheck_title": "🚫 /bancheck <uid> — check ban",
         "inline_bancheck_desc": "Example: bancheck 8530477563",
-        "inline_banner_title": "🖼 /banner <uid> — image(s)",
-        "inline_banner_desc": "Example: banner 8530477563",
         "inline_region_title": "🌍 /region <uid> — region info",
         "inline_region_desc": "Example: region 8530477563",
         "inline_token_title": "🔑 /token <uid> <password> — JWT token",
@@ -513,7 +508,8 @@ TR = {
         "sub_check_button": "✅ I subscribed, check",
         "sub_not_yet": "❌ You haven't subscribed to all the required channels/groups yet!",
         "sub_confirmed": "✅ Subscription confirmed! You can now fully use the bot.",
-        "like_usage_msg": "❌ Error! You forgot to enter the UID and region.\nCorrect usage: `/like 8530477563 RU`",
+        "like_usage_msg": "❌ Error! You forgot to enter the region and UID.\nCorrect usage: `/like RU 8530477563`",
+        "banner_private_only": "⚠️ The `/banner` command only works in the bot's private chat. Please message the bot privately and use it there.",
         "like_region_invalid": "❌ Invalid region! It must contain letters only (e.g. RU, ID, BD, PK, VN).",
         "like_loading": "🔄 Please wait, sending like...",
         "like_limit_reached": "⛔ You've reached today's like limit (`{limit}` per day). Please try again tomorrow.",
@@ -542,9 +538,9 @@ TR = {
             "├─ 🎉 Likes sent: `{likes_given}`\n"
             "└─ 📌 Status: `{status}`"
         ),
-        "inline_like_title": "❤️ /like <uid> <region> — send a like",
-        "inline_like_desc": "Example: like 8530477563 RU",
-        "inline_like_missing_desc": "Type it as: like <uid> <region>, e.g. like 8530477563 RU",
+        "inline_like_title": "❤️ /like <region> <uid> — send a like",
+        "inline_like_desc": "Example: like RU 8530477563",
+        "inline_like_missing_desc": "Type it as: like <region> <uid>, e.g. like RU 8530477563",
     },
 }
 
@@ -1631,6 +1627,13 @@ async def bancheck_command_handler(message: types.Message, session: aiohttp.Clie
 @dp.message(Cmd("banner"))
 async def banner_command_handler(message: types.Message, session: aiohttp.ClientSession):
     lang = await get_user_lang(message.from_user.id, message.chat.type)
+
+    # /banner faqat botning shaxsiy (lichka) chatida ishlaydi - guruh/kanal va
+    # inline rejimda ishlatilmaydi (inline'da bu buyruq umuman ko'rsatilmaydi).
+    if message.chat.type != "private":
+        await message.answer(t("banner_private_only", lang), parse_mode="Markdown")
+        return
+
     command_parts = message.text.split(maxsplit=1)
     if len(command_parts) < 2:
         await message.answer(t("uid_missing", lang, example="/banner 7429653776"), parse_mode="Markdown")
@@ -1785,14 +1788,11 @@ async def likelimit_command_handler(message: types.Message, session: aiohttp.Cli
 # Ishlashi uchun @BotFather'da botingizga inline rejimni yoqishni unutmang:
 #   BotFather -> /mybots -> botingiz -> Bot Settings -> Inline Mode -> Turn on
 #
-# Muhim eslatma: Telegram bitta inline natija = bitta xabar. Shu sabab
-# /info kabi juda uzun matnli buyruqlar rasm bilan birga BITTA xabarda
-# bo'la olmaydi (rasm caption'i 1024 belgigacha, /info matni esa undan
-# ancha uzun). Shu sababli:
-#   - info/bancheck/region/token/help/like -> to'liq matn natija sifatida yuboriladi
-#   - banner -> foydalanuvchi natijani tanlagach (chosen_inline_result),
-#     xabar avtomatik ravishda birlashtirilgan banner+outfit RASMIGA
-#     almashtiriladi.
+# Muhim eslatma: /banner buyrug'i inline rejimda mavjud EMAS - u faqat
+# botning shaxsiy (lichka) chatida ishlaydi, chunki u rasm(lar) yuboradi va
+# Telegram inline natijasi orqali rasm yuklab bo'lmaydi/qulay emas.
+# Inline rejimda faqat quyidagi buyruqlar ishlaydi:
+#   info/bancheck/region/token/help/like -> to'liq matn natija sifatida yuboriladi.
 
 def _inline_command_articles(lang: str):
     """Bo'sh so'rov uchun (yoki noma'lum buyruq uchun) ko'rsatiladigan
@@ -1801,7 +1801,6 @@ def _inline_command_articles(lang: str):
         ("help", t("inline_help_title", lang), t("inline_help_desc", lang)),
         ("info", t("inline_info_title", lang), t("inline_info_desc", lang)),
         ("bancheck", t("inline_bancheck_title", lang), t("inline_bancheck_desc", lang)),
-        ("banner", t("inline_banner_title", lang), t("inline_banner_desc", lang)),
         ("region", t("inline_region_title", lang), t("inline_region_desc", lang)),
         ("token", t("inline_token_title", lang), t("inline_token_desc", lang)),
         ("like", t("inline_like_title", lang), t("inline_like_desc", lang)),
@@ -1857,7 +1856,7 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
     cmd = extract_command(query_text)
     parts = query_text.split(maxsplit=2)
 
-    if cmd not in ("info", "bancheck", "banner", "region", "token", "help", "like"):
+    if cmd not in ("info", "bancheck", "region", "token", "help", "like"):
         # Noma'lum matn - tayyor buyruqlarni tavsiya qilamiz
         await inline_query.answer(_inline_command_articles(lang), cache_time=10, is_personal=True)
         return
@@ -1962,21 +1961,6 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
 
     uid = parts[1].strip()
 
-    if cmd == "banner":
-        # Bu buyruq faqat rasm bilan javob beradi - shuning uchun avval
-        # "yuklanmoqda" matnini ko'rsatamiz, tanlanganda chosen_inline_result
-        # rasmga almashtiradi.
-        await inline_query.answer(
-            [InlineQueryResultArticle(
-                id=f"banner:{uid}",
-                title=f"🖼 UID {uid}",
-                description=t("inline_loading_desc", lang),
-                input_message_content=InputTextMessageContent(message_text=t("inline_loading_title", lang)),
-            )],
-            cache_time=0, is_personal=True,
-        )
-        return
-
     info_url = f"{FF_API_BASE}/player-info?uid={uid}"
     data = await fetch_json(session, info_url)
 
@@ -2004,67 +1988,9 @@ async def inline_query_handler(inline_query: InlineQuery, session: aiohttp.Clien
         cache_time=5, is_personal=True,
     )
 
-@dp.chosen_inline_result()
-async def chosen_inline_result_handler(chosen: ChosenInlineResult, session: aiohttp.ClientSession):
-    """Foydalanuvchi inline natijani tanlagach ishga tushadi. Faqat 'banner:<uid>'
-    natijalari uchun matnni haqiqiy rasmga almashtiramiz."""
-    if not chosen.inline_message_id:
-        return
-
-    result_id = chosen.result_id or ""
-    if ":" not in result_id:
-        return
-    cmd, uid = result_id.split(":", 1)
-    if cmd != "banner" or not uid.isdigit():
-        return
-
-    lang = await get_user_lang(chosen.from_user.id, "private")
-
-    banner_url = f"{FF_API_BASE}/avatar-banner?uid={uid}"
-    outfit_url = f"{FF_API_BASE}/player-live-outfits?uid={uid}"
-    banner_bytes, outfit_bytes = await asyncio.gather(
-        fetch_bytes(session, banner_url),
-        fetch_bytes(session, outfit_url),
-    )
-
-    if not banner_bytes and not outfit_bytes:
-        try:
-            await bot.edit_message_text(
-                inline_message_id=chosen.inline_message_id,
-                text=t("photos_failed", lang),
-            )
-        except Exception as e:
-            logging.warning(f"Inline banner matn yangilashda xato: {e}")
-        return
-
-    if banner_bytes and outfit_bytes:
-        final_bytes = await combine_banner_and_outfit_async(banner_bytes, outfit_bytes)
-        caption = t("banner_caption_combined", lang)
-    elif banner_bytes:
-        final_bytes = banner_bytes
-        caption = t("banner_caption1", lang)
-    else:
-        final_bytes = outfit_bytes
-        caption = t("banner_caption2", lang)
-
-    photo_file = BufferedInputFile(final_bytes, filename="banner.jpg")
-
-    try:
-        await bot.edit_message_media(
-            inline_message_id=chosen.inline_message_id,
-            media=InputMediaPhoto(media=photo_file, caption=caption, parse_mode="Markdown"),
-        )
-    except Exception as e:
-        # Ba'zi mijoz-versiyalarda inline xabarga yangi fayl yuklash cheklangan
-        # bo'lishi mumkin - bu holda hech bo'lmasa xabar matnini yangilaymiz.
-        logging.warning(f"Inline rasm biriktirishda xato: {e}")
-        try:
-            await bot.edit_message_text(
-                inline_message_id=chosen.inline_message_id,
-                text=t("photos_failed", lang),
-            )
-        except Exception:
-            pass
+# DIQQAT: /banner endi faqat botning shaxsiy (lichka) chatida ishlaydi va
+# inline rejimdan butunlay olib tashlangan, shuning uchun avvalgi
+# chosen_inline_result "banner" logikasi endi kerak emas va olib tashlandi.
 
 # ==========================================
 # 🌐 RENDER UCHUN KEEP-ALIVE (WEB SERVER + SELF-PING)
